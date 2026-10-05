@@ -11,10 +11,10 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/mixer-sys/LeadFlow/internal/handler"
-	"github.com/mixer-sys/LeadFlow/internal/platform/database"
-	"github.com/mixer-sys/LeadFlow/internal/repository"
-	"github.com/mixer-sys/LeadFlow/internal/service"
+	"leadflow/internal/handler"
+	"leadflow/internal/platform/database"
+	"leadflow/internal/repository"
+	"leadflow/internal/service"
 )
 
 type config struct {

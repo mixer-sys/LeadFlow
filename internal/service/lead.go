@@ -8,7 +8,7 @@ import (
 )
 
 type LeadService struct {
-	repo *repository
+	repo *repository.LeadRepo
 }
 
 func NewLeadService(repo *repository.LeadRepo) *LeadService {

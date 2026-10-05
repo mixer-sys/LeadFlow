@@ -1,4 +1,4 @@
-module github.com/mixer-sys/LeadFlow
+module leadflow
 
 go 1.25.0
 

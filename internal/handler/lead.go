@@ -43,7 +43,7 @@ func (h *LeadHandler) Create(w http.ResponseWriter, r *http.Request) {
 	input := service.CreateLeadInput{
 		Source:  req.Source,
 		Name:    req.Name,
-		Email:   req.Email,
+		Email:   &req.Email,
 		Phone:   req.Phone,
 		Message: req.Message,
 	}

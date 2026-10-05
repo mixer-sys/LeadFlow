@@ -4,11 +4,10 @@ import (
 	"context"
 	"time"
 
+	"leadflow/internal/domain"
+
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/mixer-sys/LeadFlow/internal/domain"
-
-	"leadflow/internal/domain"
 )
 
 type LeadRepo struct {
