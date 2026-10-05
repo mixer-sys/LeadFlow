@@ -1,0 +1,29 @@
+panic: goose: duplicate version 1 detected:
+	000001_create_leads_table.up.sql
+	000001_create_leads_table.down.sql
+
+goroutine 1 [running]:
+github.com/pressly/goose/v3.Migrations.Less({0xc83114d4340, 0x5fdacd?, 0x1ae51e8?}, 0x1, 0x0)
+	/home/us3r/go/pkg/mod/github.com/pressly/goose/v3@v3.28.0/migrate.go:38 +0x128
+sort.insertionSort({0x1b04090, 0xc8311365080}, 0x0, 0x2)
+	/home/us3r/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.8.linux-amd64/src/sort/zsortinterface.go:12 +0x97
+sort.pdqsort({0x1b04090, 0xc8311365080}, 0x18?, 0x1689800?, 0x1?)
+	/home/us3r/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.8.linux-amd64/src/sort/zsortinterface.go:73 +0x30d
+sort.Sort({0x1b04090, 0xc8311365080})
+	/home/us3r/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.8.linux-amd64/src/sort/sort.go:56 +0x54
+github.com/pressly/goose/v3.sortAndConnectMigrations({0xc83114d4340, 0x2, 0x2})
+	/home/us3r/go/pkg/mod/github.com/pressly/goose/v3@v3.28.0/migrate.go:181 +0x35
+github.com/pressly/goose/v3.collectMigrationsFS({0x1af1360, 0x2cb0040}, {0x1ae51e8, 0x1}, 0x0, 0x7fffffffffffffff, 0xc83115c5a70)
+	/home/us3r/go/pkg/mod/github.com/pressly/goose/v3@v3.28.0/migrate.go:171 +0x5a5
+github.com/pressly/goose/v3.CollectMigrations(...)
+	/home/us3r/go/pkg/mod/github.com/pressly/goose/v3@v3.28.0/migrate.go:177
+github.com/pressly/goose/v3.UpToContext({0x1b076f0, 0x2cb0040}, 0xc83115fd5f0, {0x1ae51e8, 0x1}, 0x7fffffffffffffff, {0x2cb0040, 0x0, 0x19f91b6?})
+	/home/us3r/go/pkg/mod/github.com/pressly/goose/v3@v3.28.0/up.go:46 +0xe7
+github.com/pressly/goose/v3.UpContext(...)
+	/home/us3r/go/pkg/mod/github.com/pressly/goose/v3@v3.28.0/up.go:168
+github.com/pressly/goose/v3.run({0x1b076f0?, 0x2cb0040?}, {0x7fff0aa4ef78?, 0xc83114cfe30?}, 0x1a0c9f6?, {0x1ae51e8?, 0x13?}, {0xc831161fce0, 0x0, 0x0}, ...)
+	/home/us3r/go/pkg/mod/github.com/pressly/goose/v3@v3.28.0/goose.go:70 +0x85
+github.com/pressly/goose/v3.RunWithOptionsContext(...)
+	/home/us3r/go/pkg/mod/github.com/pressly/goose/v3@v3.28.0/goose.go:64
+main.main()
+	/home/us3r/go/pkg/mod/github.com/pressly/goose/v3@v3.28.0/cmd/goose/main.go:183 +0x119f

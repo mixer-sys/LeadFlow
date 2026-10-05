@@ -1,0 +1,12 @@
+# Go
+bin/
+*.exe
+*.test
+
+# Environment and secrets
+.env
+.env.*
+!.env.example
+
+# IDE
+.vscode/
