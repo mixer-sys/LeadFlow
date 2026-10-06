@@ -8,15 +8,25 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
+	"leadflow/internal/platform/database"
 	"leadflow/internal/platform/queue"
 	"leadflow/internal/platform/telegram"
+	"leadflow/internal/repository"
 )
 
 type config struct {
 	RedisAddr        string
 	TelegramBotToken string
 	TelegramChatID   int64
+
+	DBHost     string
+	DBPort     string
+	DBUser     string
+	DBPassword string
+	DBName     string
+	DBSSLMode  string
 }
 
 func loadConfig() config {
@@ -24,6 +34,13 @@ func loadConfig() config {
 		RedisAddr:        getEnv("REDIS_ADDR", "localhost:6379"),
 		TelegramBotToken: getEnv("TELEGRAM_BOT_TOKEN", ""),
 		TelegramChatID:   getEnvInt64("TELEGRAM_CHAT_ID", 0),
+
+		DBHost:     getEnv("DB_HOST", "localhost"),
+		DBPort:     getEnv("DB_PORT", "5432"),
+		DBUser:     getEnv("DB_USER", "leadflow"),
+		DBPassword: getEnv("DB_PASSWORD", "leadflow"),
+		DBName:     getEnv("DB_NAME", "leadflow"),
+		DBSSLMode:  getEnv("DB_SSLMODE", "disable"),
 	}
 }
 
@@ -57,6 +74,27 @@ func main() {
 	cfg := loadConfig()
 
 	ctx := context.Background()
+
+	dsn := fmt.Sprintf(
+		"postgres://%s:%s@%s:%s/%s?sslmode=%s",
+		cfg.DBUser,
+		cfg.DBPassword,
+		cfg.DBHost,
+		cfg.DBPort,
+		cfg.DBName,
+		cfg.DBSSLMode,
+	)
+
+	db, err := database.NewPostgres(ctx, dsn)
+	if err != nil {
+		logger.Error("failed to connect to postgres", "error", err)
+		os.Exit(1)
+	}
+	defer func() {
+		_ = db.Close(ctx)
+	}()
+
+	leadRepo := repository.NewLeadRepo(db.Pool())
 
 	q := queue.NewRedisQueue(cfg.RedisAddr, "leads")
 
@@ -126,6 +164,14 @@ func main() {
 						logger.Error("failed to send telegram message", "error", err, "lead_id", ev.LeadID)
 					} else {
 						logger.Info("telegram message sent", "lead_id", ev.LeadID, "message_id", msgID)
+
+						now := time.Now()
+
+						if err := leadRepo.UpdateTelegramSent(ctx, ev.LeadID, msgID, now); err != nil {
+							logger.Error("failed to update lead in database", "error", err, "lead_id", ev.LeadID)
+						} else {
+							logger.Info("lead updated in database", "lead_id", ev.LeadID, "message_id", msgID)
+						}
 					}
 				}
 				lastID = m.ID
