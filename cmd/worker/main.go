@@ -154,26 +154,58 @@ func main() {
 
 				logger.Info("received event", "lead_id", ev.LeadID, "msg_id", m.ID)
 
+				lead, err := leadRepo.GetByID(ctx, ev.LeadID)
+				if err != nil {
+					logger.Error("failed to get lead", "error", err, "lead_id", ev.LeadID)
+					continue
+				}
+
+				if lead == nil {
+					logger.Warn("lead not found", "lead_id", ev.LeadID)
+					continue
+				}
+
+				if lead.TelegramMessageID != nil && *lead.TelegramMessageID != 0 {
+					logger.Info("lead already notified, skipping", "lead_id", ev.LeadID, "telegram_message_id", *lead.TelegramMessageID)
+					lastID = m.ID
+					continue
+				}
+
+				if err != nil {
+
+				}
+
 				if tg != nil {
 					text := fmt.Sprintf("🔔 Новая заявка\nLead ID: %d", ev.LeadID)
+
 					msgID, err := tg.SendMessage(ctx, telegram.SendMessageParams{
 						ChatID: cfg.TelegramChatID,
 						Text:   text,
 					})
 					if err != nil {
 						logger.Error("failed to send telegram message", "error", err, "lead_id", ev.LeadID)
-					} else {
-						logger.Info("telegram message sent", "lead_id", ev.LeadID, "message_id", msgID)
 
-						now := time.Now()
+						logger.Error("failed to send telegram message", "error", err, "lead_id", ev.LeadID)
 
-						if err := leadRepo.UpdateTelegramSent(ctx, ev.LeadID, msgID, now); err != nil {
-							logger.Error("failed to update lead in database", "error", err, "lead_id", ev.LeadID)
-						} else {
-							logger.Info("lead updated in database", "lead_id", ev.LeadID, "message_id", msgID)
+						const maxRetries = 5
+						if err := leadRepo.IncrTelegramRetryCount(ctx, ev.LeadID, maxRetries); err != nil {
+							logger.Error("failed to increment retry count", "error", err, "lead_id", ev.LeadID)
 						}
+
+						continue
+					}
+
+					logger.Info("telegram message sent", "lead_id", ev.LeadID, "message_id", msgID)
+
+					now := time.Now()
+
+					if err := leadRepo.UpdateTelegramSent(ctx, ev.LeadID, msgID, now); err != nil {
+						logger.Error("failed to update lead in database", "error", err, "lead_id", ev.LeadID)
+					} else {
+						logger.Info("lead updated in database", "lead_id", ev.LeadID, "message_id", msgID)
 					}
 				}
+
 				lastID = m.ID
 
 				// sent TG Message

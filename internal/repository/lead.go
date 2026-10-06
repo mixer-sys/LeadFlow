@@ -66,7 +66,7 @@ func (r *LeadRepo) Create(ctx context.Context, params CreateLeadParams) (*domain
 
 func (r *LeadRepo) GetByID(ctx context.Context, id int64) (*domain.Lead, error) {
 	query := `
-		SELECT id, created_at, updated_at, source, name, email, phone, message, status, processed_at, telegram_message_id, telegram_sent_at
+		SELECT id, created_at, updated_at, source, name, email, phone, message, status, processed_at, telegram_message_id, telegram_sent_at, telegram_retry_count
 		FROM leads
 		WHERE id = $1
 	`
@@ -88,6 +88,7 @@ func (r *LeadRepo) GetByID(ctx context.Context, id int64) (*domain.Lead, error) 
 		&lead.ProcessedAt,
 		&lead.TelegramMessageID,
 		&lead.TelegramSentAt,
+		&lead.TelegramRetryCount,
 	)
 	if err != nil {
 		if err == pgx.ErrNoRows {
@@ -97,6 +98,32 @@ func (r *LeadRepo) GetByID(ctx context.Context, id int64) (*domain.Lead, error) 
 	}
 
 	return &lead, nil
+}
+
+func (r *LeadRepo) IncrTelegramRetryCount(
+	ctx context.Context,
+	id int64,
+	maxRetries int,
+) error {
+	query := `
+	UPDATE leads
+	SET
+		telegram_retry_count = telegram_retry_count + 1,
+		status = CASE
+			WHEN telegram_retry_count + 1 >= $2 THEN $3
+		ELSE status
+		END,
+		updated_at = NOW()
+		WHERE id = $1
+	`
+	_, err := r.pool.Exec(
+		ctx,
+		query,
+		id,
+		maxRetries,
+		domain.LeadStatusFailed,
+	)
+	return err
 }
 
 func (r *LeadRepo) UpdateTelegramSent(
