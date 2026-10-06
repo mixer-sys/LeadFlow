@@ -4,15 +4,17 @@ import (
 	"context"
 
 	"leadflow/internal/domain"
+	"leadflow/internal/platform/queue"
 	"leadflow/internal/repository"
 )
 
 type LeadService struct {
-	repo *repository.LeadRepo
+	repo  *repository.LeadRepo
+	queue *queue.RedisQueue
 }
 
-func NewLeadService(repo *repository.LeadRepo) *LeadService {
-	return &LeadService{repo: repo}
+func NewLeadService(repo *repository.LeadRepo, q *queue.RedisQueue) *LeadService {
+	return &LeadService{repo: repo, queue: q}
 }
 
 type CreateLeadInput struct {
@@ -32,5 +34,16 @@ func (s *LeadService) CreateLead(ctx context.Context, input CreateLeadInput) (*d
 		Message: input.Message,
 	}
 
-	return s.repo.Create(ctx, params)
+	lead, err := s.repo.Create(ctx, params)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := s.queue.PublishLeadCreated(
+		ctx, lead.ID,
+	); err != nil {
+		// logging
+	}
+
+	return lead, nil
 }

@@ -13,6 +13,7 @@ import (
 
 	"leadflow/internal/handler"
 	"leadflow/internal/platform/database"
+	"leadflow/internal/platform/queue"
 	"leadflow/internal/repository"
 	"leadflow/internal/service"
 )
@@ -26,6 +27,8 @@ type config struct {
 	DBPassword string
 	DBName     string
 	DBSSLMode  string
+
+	RedisAddr string
 }
 
 func loadConfig() config {
@@ -38,6 +41,8 @@ func loadConfig() config {
 		DBPassword: getEnv("DB_Password", "leadflow"),
 		DBName:     getEnv("DB_NAME", "leadflow"),
 		DBSSLMode:  getEnv("DB_SSLMODE", "disable"),
+
+		RedisAddr: getEnv("REDIS_ADDR", "localhost:6379"),
 	}
 }
 
@@ -74,8 +79,10 @@ func main() {
 		_ = db.Close(ctx)
 	}()
 
+	redisQueue := queue.NewRedisQueue(cfg.RedisAddr, "leads")
+
 	leadRepo := repository.NewLeadRepo(db.Pool())
-	leadSvc := service.NewLeadService(leadRepo)
+	leadSvc := service.NewLeadService(leadRepo, redisQueue)
 	leadHandler := handler.NewLeadHandler(leadSvc)
 
 	mux := http.NewServeMux()
