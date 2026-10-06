@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <title>Leads Admin</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; }
+        table { border-collapse: collapse; width: 100%; }
+        th, td { border: 1px solid #ccc; padding: 6px 8px; text-align: left; }
+        th { background: #f5f5f5; }
+        tr:nth-child(even) { background: #fafafa; }
+        .muted { color: #777; }
+        a { text-decoration: none; color: #0077cc; }
+        a:hover { text-decoration: underline; }
+    </style>
+</head>
+<body>
+    <h1>Leads</h1>
+
+    <table>
+        <thead>
+        <tr>
+            <th>ID</th>
+            <th>Source</th>
+            <th>Name</th>
+            <th>Email</th>
+            <th>Phone</th>
+            <th>Status</th>
+            <th>Created At</th>
+        </tr>
+        </thead>
+        <tbody>
+        {{range .Items}}
+        <tr>
+            <td>{{.ID}}</td>
+            <td>{{.Source}}</td>
+            <td>{{if .Name}}{{.Name}}{{else}}<span class="muted">—</span>{{end}}</td>
+            <td>{{if .Email}}{{.Email}}{{else}}<span class="muted">—</span>{{end}}</td>
+            <td>{{if .Phone}}{{.Phone}}{{else}}<span class="muted">—</span>{{end}}</td>
+            <td>{{.Status}}</td>
+            <td class="muted">{{.CreatedAt}}</td>
+        </tr>
+        {{end}}
+        </tbody>
+    </table>
+
+    <p class="muted">Total: {{.Total}}</p>
+
+    {{if .HasPrev}}
+    <a href="/admin/leads?offset={{.PrevOffset}}&limit={{.Limit}}">← Prev</a>
+    {{else}}
+    <span class="muted">← Prev</span>
+    {{end}}
+
+    {{if .HasNext}}
+    <a href="/admin/leads?offset={{.NextOffset}}&limit={{.Limit}}">Next →</a>
+    {{else}}
+    <span class="muted">Next →</span>
+    {{end}}
+</body>
+</html>

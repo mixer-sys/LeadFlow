@@ -25,6 +25,33 @@ type CreateLeadInput struct {
 	Message *string
 }
 
+type ListLeadsInput struct {
+	Limit  int
+	Offset int
+}
+
+type ListLeadsResult struct {
+	Items []*domain.Lead
+	Total int64
+}
+
+func (s *LeadService) ListLeads(ctx context.Context, input ListLeadsInput) (*repository.ListLeadsResult, error) {
+	if input.Limit <= 0 {
+		input.Limit = 50
+	}
+
+	if input.Limit > 200 {
+		input.Limit = 200
+	}
+
+	params := repository.ListLeadsParams{
+		Limit:  input.Limit,
+		Offset: input.Offset,
+	}
+
+	return s.repo.ListLeads(ctx, params)
+}
+
 func (s *LeadService) CreateLead(ctx context.Context, input CreateLeadInput) (*domain.Lead, error) {
 	params := repository.CreateLeadParams{
 		Source:  input.Source,

@@ -2,6 +2,7 @@ package repository
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"leadflow/internal/domain"
@@ -9,6 +10,16 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
+
+type ListLeadsParams struct {
+	Limit  int
+	Offset int
+}
+
+type ListLeadsResult struct {
+	Items []*domain.Lead
+	Total int64
+}
 
 type LeadRepo struct {
 	pool *pgxpool.Pool
@@ -26,6 +37,60 @@ type CreateLeadParams struct {
 	Email   *string
 	Phone   *string
 	Message *string
+}
+
+func (r *LeadRepo) ListLeads(ctx context.Context, params ListLeadsParams) (*ListLeadsResult, error) {
+	var total int64
+	err := r.pool.QueryRow(ctx, "SELECT COUNT(*) FROM leads").Scan(&total)
+	if err != nil {
+		return nil, fmt.Errorf("count leads: %w", err)
+	}
+
+	query := `
+		SELECT id, created_at, updated_at, source, name, email, phone, message, status, processed_at, telegram_message_id, telegram_sent_at, telegram_retry_count FROM leads ORDER BY id DESC LIMIT $1 OFFSET $2
+	`
+
+	rows, err := r.pool.Query(ctx, query, params.Limit, params.Offset)
+	if err != nil {
+		return nil, fmt.Errorf("list leads: %w", err)
+	}
+	defer rows.Close()
+
+	items := make([]*domain.Lead, 0)
+
+	for rows.Next() {
+		var lead domain.Lead
+
+		err := rows.Scan(
+			&lead.ID,
+			&lead.CreatedAt,
+			&lead.UpdatedAt,
+			&lead.Source,
+			&lead.Name,
+			&lead.Email,
+			&lead.Phone,
+			&lead.Message,
+			&lead.Status,
+			&lead.ProcessedAt,
+			&lead.TelegramMessageID,
+			&lead.TelegramSentAt,
+			&lead.TelegramRetryCount,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("scan lead: %w", err)
+		}
+
+		items = append(items, &lead)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("rows error: %w", err)
+	}
+
+	return &ListLeadsResult{
+		Items: items,
+		Total: total,
+	}, nil
 }
 
 func (r *LeadRepo) Create(ctx context.Context, params CreateLeadParams) (*domain.Lead, error) {

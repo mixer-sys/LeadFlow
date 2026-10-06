@@ -84,11 +84,20 @@ func main() {
 	leadRepo := repository.NewLeadRepo(db.Pool())
 	leadSvc := service.NewLeadService(leadRepo, redisQueue)
 	leadHandler := handler.NewLeadHandler(leadSvc)
+	leadListHandler := handler.NewLeadListHandler(leadSvc)
+
+	adminLeadsHandler, err := handler.NewAdminLeadsHandler(leadSvc)
+	if err != nil {
+		logger.Error("failed to create admin leads handler", "error", err)
+		os.Exit(1)
+	}
 
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("GET /healthz", healthHandler)
 	mux.HandleFunc("POST /api/v1/leads", leadHandler.Create)
+	mux.Handle("GET /api/v1/leads", leadListHandler)
+	mux.Handle("GET /admin/leads", adminLeadsHandler)
 
 	server := &http.Server{
 		Addr:              cfg.HTTPAddr,
