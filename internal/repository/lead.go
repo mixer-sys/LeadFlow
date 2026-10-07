@@ -3,6 +3,7 @@ package repository
 import (
 	"context"
 	"fmt"
+	"os"
 	"time"
 
 	"leadflow/internal/domain"
@@ -32,106 +33,17 @@ func NewLeadRepo(pool *pgxpool.Pool) *LeadRepo {
 }
 
 type CreateLeadParams struct {
-	Source  string
-	Name    *string
-	Email   *string
-	Phone   *string
-	Message *string
-}
-
-func (r *LeadRepo) ListLeads(ctx context.Context, params ListLeadsParams) (*ListLeadsResult, error) {
-	var total int64
-	err := r.pool.QueryRow(ctx, "SELECT COUNT(*) FROM leads").Scan(&total)
-	if err != nil {
-		return nil, fmt.Errorf("count leads: %w", err)
-	}
-
-	query := `
-		SELECT id, created_at, updated_at, source, name, email, phone, message, status, processed_at, telegram_message_id, telegram_sent_at, telegram_retry_count FROM leads ORDER BY id DESC LIMIT $1 OFFSET $2
-	`
-
-	rows, err := r.pool.Query(ctx, query, params.Limit, params.Offset)
-	if err != nil {
-		return nil, fmt.Errorf("list leads: %w", err)
-	}
-	defer rows.Close()
-
-	items := make([]*domain.Lead, 0)
-
-	for rows.Next() {
-		var lead domain.Lead
-
-		err := rows.Scan(
-			&lead.ID,
-			&lead.CreatedAt,
-			&lead.UpdatedAt,
-			&lead.Source,
-			&lead.Name,
-			&lead.Email,
-			&lead.Phone,
-			&lead.Message,
-			&lead.Status,
-			&lead.ProcessedAt,
-			&lead.TelegramMessageID,
-			&lead.TelegramSentAt,
-			&lead.TelegramRetryCount,
-		)
-		if err != nil {
-			return nil, fmt.Errorf("scan lead: %w", err)
-		}
-
-		items = append(items, &lead)
-	}
-
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("rows error: %w", err)
-	}
-
-	return &ListLeadsResult{
-		Items: items,
-		Total: total,
-	}, nil
-}
-
-func (r *LeadRepo) Create(ctx context.Context, params CreateLeadParams) (*domain.Lead, error) {
-	query := `
-	INSERT INTO leads (source, name, email, phone, message, status, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6, NOW(), NOW()) RETURNING id, created_at, updated_at, source, name, email, phone, message, status, processed_at, telegram_message_id, telegram_sent_at
-	`
-	var lead domain.Lead
-
-	err := r.pool.QueryRow(
-		ctx,
-		query,
-		params.Source,
-		params.Name,
-		params.Email,
-		params.Phone,
-		params.Message,
-		domain.LeadStatusNew,
-	).Scan(
-		&lead.ID,
-		&lead.CreatedAt,
-		&lead.UpdatedAt,
-		&lead.Source,
-		&lead.Name,
-		&lead.Email,
-		&lead.Phone,
-		&lead.Message,
-		&lead.Status,
-		&lead.ProcessedAt,
-		&lead.TelegramMessageID,
-		&lead.TelegramSentAt,
-	)
-	if err != nil {
-		return nil, err
-	}
-
-	return &lead, nil
+	Source         string
+	Name           *string
+	Email          *string
+	Phone          *string
+	Message        *string
+	OrganizationID int64
 }
 
 func (r *LeadRepo) GetByID(ctx context.Context, id int64) (*domain.Lead, error) {
 	query := `
-		SELECT id, created_at, updated_at, source, name, email, phone, message, status, processed_at, telegram_message_id, telegram_sent_at, telegram_retry_count
+		SELECT id, created_at, updated_at, source, name, email, phone, message, status, processed_at, telegram_message_id, telegram_sent_at, telegram_retry_count, organization_id 
 		FROM leads
 		WHERE id = $1
 	`
@@ -154,6 +66,7 @@ func (r *LeadRepo) GetByID(ctx context.Context, id int64) (*domain.Lead, error) 
 		&lead.TelegramMessageID,
 		&lead.TelegramSentAt,
 		&lead.TelegramRetryCount,
+		&lead.OrganizationID,
 	)
 	if err != nil {
 		if err == pgx.ErrNoRows {
@@ -189,6 +102,108 @@ func (r *LeadRepo) IncrTelegramRetryCount(
 		domain.LeadStatusFailed,
 	)
 	return err
+}
+
+func (r *LeadRepo) ListLeads(ctx context.Context, params ListLeadsParams) (*ListLeadsResult, error) {
+	var total int64
+	err := r.pool.QueryRow(ctx, "SELECT COUNT(*) FROM leads").Scan(&total)
+	if err != nil {
+		return nil, fmt.Errorf("count leads: %w", err)
+	}
+
+	query := `
+		SELECT id, created_at, updated_at, source, name, email, phone, message, status, processed_at, telegram_message_id, telegram_sent_at, telegram_retry_count, organization_id  FROM leads ORDER BY id DESC LIMIT $1 OFFSET $2
+	`
+
+	rows, err := r.pool.Query(ctx, query, params.Limit, params.Offset)
+	if err != nil {
+		return nil, fmt.Errorf("list leads: %w", err)
+	}
+	defer rows.Close()
+
+	items := make([]*domain.Lead, 0)
+
+	for rows.Next() {
+		var lead domain.Lead
+
+		err := rows.Scan(
+			&lead.ID,
+			&lead.CreatedAt,
+			&lead.UpdatedAt,
+			&lead.Source,
+			&lead.Name,
+			&lead.Email,
+			&lead.Phone,
+			&lead.Message,
+			&lead.Status,
+			&lead.ProcessedAt,
+			&lead.TelegramMessageID,
+			&lead.TelegramSentAt,
+			&lead.TelegramRetryCount,
+			&lead.OrganizationID,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("scan lead: %w", err)
+		}
+
+		items = append(items, &lead)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("rows error: %w", err)
+	}
+
+	return &ListLeadsResult{
+		Items: items,
+		Total: total,
+	}, nil
+}
+
+func (r *LeadRepo) Create(ctx context.Context, params CreateLeadParams) (*domain.Lead, error) {
+	query := `
+		INSERT INTO leads (source, name, email, phone, message, status, organization_id, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), NOW())
+		RETURNING id, created_at, updated_at, source, name, email, phone, message,
+				status, processed_at, telegram_message_id, telegram_sent_at,
+				telegram_retry_count, organization_id
+		`
+	fmt.Fprintf(os.Stderr,
+		"DB INSERT: source=%q, org_id=%d, name=%v, email=%v\n",
+		params.Source, params.OrganizationID, params.Name, params.Email,
+	)
+	var lead domain.Lead
+
+	err := r.pool.QueryRow(
+		ctx,
+		query,
+		params.Source,
+		params.Name,
+		params.Email,
+		params.Phone,
+		params.Message,
+		domain.LeadStatusNew,
+		params.OrganizationID,
+	).Scan(
+		&lead.ID,
+		&lead.CreatedAt,
+		&lead.UpdatedAt,
+		&lead.Source,
+		&lead.Name,
+		&lead.Email,
+		&lead.Phone,
+		&lead.Message,
+		&lead.Status,
+		&lead.ProcessedAt,
+		&lead.TelegramMessageID,
+		&lead.TelegramSentAt,
+		&lead.TelegramRetryCount,
+		&lead.OrganizationID,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	return &lead, nil
 }
 
 func (r *LeadRepo) UpdateTelegramSent(

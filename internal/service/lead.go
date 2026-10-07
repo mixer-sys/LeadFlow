@@ -2,6 +2,8 @@ package service
 
 import (
 	"context"
+	"fmt"
+	"os"
 
 	"leadflow/internal/domain"
 	"leadflow/internal/platform/queue"
@@ -18,11 +20,12 @@ func NewLeadService(repo *repository.LeadRepo, q *queue.RedisQueue) *LeadService
 }
 
 type CreateLeadInput struct {
-	Source  string
-	Name    *string
-	Email   *string
-	Phone   *string
-	Message *string
+	Source         string
+	Name           *string
+	Email          *string
+	Phone          *string
+	Message        *string
+	OrganizationID int64
 }
 
 type ListLeadsInput struct {
@@ -53,16 +56,21 @@ func (s *LeadService) ListLeads(ctx context.Context, input ListLeadsInput) (*rep
 }
 
 func (s *LeadService) CreateLead(ctx context.Context, input CreateLeadInput) (*domain.Lead, error) {
+	fmt.Fprintf(os.Stderr, "Before CreateLeadParams: org_id=%d\n", input.OrganizationID)
 	params := repository.CreateLeadParams{
-		Source:  input.Source,
-		Name:    input.Name,
-		Email:   input.Email,
-		Phone:   input.Phone,
-		Message: input.Message,
+		Source:         input.Source,
+		Name:           input.Name,
+		Email:          input.Email,
+		Phone:          input.Phone,
+		Message:        input.Message,
+		OrganizationID: input.OrganizationID,
 	}
+
+	fmt.Fprintf(os.Stderr, "After CreateLeadParams: org_id=%d\n", params.OrganizationID)
 
 	lead, err := s.repo.Create(ctx, params)
 	if err != nil {
+		fmt.Fprintf(os.Stderr, "repo.Create error: %v\n", err)
 		return nil, err
 	}
 
@@ -70,6 +78,7 @@ func (s *LeadService) CreateLead(ctx context.Context, input CreateLeadInput) (*d
 		ctx, lead.ID,
 	); err != nil {
 		// logging
+		fmt.Fprintf(os.Stderr, "queue.PublishLeadCreated error: %v\n", err)
 	}
 
 	return lead, nil

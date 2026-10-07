@@ -82,9 +82,15 @@ func main() {
 	redisQueue := queue.NewRedisQueue(cfg.RedisAddr, "leads")
 
 	leadRepo := repository.NewLeadRepo(db.Pool())
+	orgRepo := repository.NewOrganizationRepo(db.Pool())
+
 	leadSvc := service.NewLeadService(leadRepo, redisQueue)
+	orgSvc := service.NewOrganizationService(orgRepo)
+
 	leadHandler := handler.NewLeadHandler(leadSvc)
 	leadListHandler := handler.NewLeadListHandler(leadSvc)
+
+	orgHandler := handler.NewOrganizationHandler(orgSvc)
 
 	adminLeadsHandler, err := handler.NewAdminLeadsHandler(leadSvc)
 	if err != nil {
@@ -98,6 +104,8 @@ func main() {
 	mux.HandleFunc("POST /api/v1/leads", leadHandler.Create)
 	mux.Handle("GET /api/v1/leads", leadListHandler)
 	mux.Handle("GET /admin/leads", adminLeadsHandler)
+
+	mux.HandleFunc("POST /api/v1/organizations", orgHandler.Create)
 
 	server := &http.Server{
 		Addr:              cfg.HTTPAddr,

@@ -2,8 +2,10 @@ package handler
 
 import (
 	"encoding/json"
+	"fmt"
 	"leadflow/internal/service"
 	"net/http"
+	"os"
 	"strconv"
 )
 
@@ -18,11 +20,12 @@ func NewLeadHandler(svc *service.LeadService) *LeadHandler {
 }
 
 type createLeadRequest struct {
-	Source  string  `json:"source"`
-	Name    *string `json:"name"`
-	Email   string  `json:"email"`
-	Phone   *string `json:"phone"`
-	Message *string `json:"message"`
+	Source         string  `json:"source"`
+	Name           *string `json:"name"`
+	Email          string  `json:"email"`
+	Phone          *string `json:"phone"`
+	Message        *string `json:"message"`
+	OrganizationID int64   `json:"organization_id"`
 }
 
 type LeadListHandler struct {
@@ -122,25 +125,29 @@ func (h *LeadListHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 func (h *LeadHandler) Create(w http.ResponseWriter, r *http.Request) {
 	var req createLeadRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+
 		http.Error(w, `{"error":"invalid json"}`, http.StatusBadRequest)
 		return
 	}
 
 	if req.Source == "" {
+
 		http.Error(w, `{"error":"source is required"}`, http.StatusBadRequest)
 		return
 	}
 
 	input := service.CreateLeadInput{
-		Source:  req.Source,
-		Name:    req.Name,
-		Email:   &req.Email,
-		Phone:   req.Phone,
-		Message: req.Message,
+		Source:         req.Source,
+		Name:           req.Name,
+		Email:          &req.Email,
+		Phone:          req.Phone,
+		Message:        req.Message,
+		OrganizationID: req.OrganizationID,
 	}
 
 	lead, err := h.svc.CreateLead(r.Context(), input)
 	if err != nil {
+		fmt.Fprintf(os.Stderr, "create lead error: %v\n", err)
 		http.Error(w, `{"error":"internal error"}`, http.StatusInternalServerError)
 		return
 	}
@@ -150,6 +157,7 @@ func (h *LeadHandler) Create(w http.ResponseWriter, r *http.Request) {
 
 	err = json.NewEncoder(w).Encode(createLeadResponse{ID: lead.ID})
 	if err != nil {
+		fmt.Fprintf(os.Stderr, "create lead error: %v\n", err)
 		http.Error(w, `{"error":"internal error"}`, http.StatusBadRequest)
 		return
 	}

@@ -24,4 +24,14 @@ type Lead struct {
 	TelegramMessageID  *int64
 	TelegramSentAt     *time.Time
 	TelegramRetryCount int
+	OrganizationID     int64
+}
+
+type CreateLeadParams struct {
+	Source         string
+	Name           *string
+	Email          *string
+	Phone          *string
+	Message        *string
+	OrganizationID int64
 }
