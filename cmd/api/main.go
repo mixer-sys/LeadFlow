@@ -84,16 +84,18 @@ func main() {
 	leadRepo := repository.NewLeadRepo(db.Pool())
 	orgRepo := repository.NewOrganizationRepo(db.Pool())
 	webhookRepo := repository.NewWebhookRepo(db.Pool())
+	apiKeyRepo := repository.NewAPIKeyRepo(db.Pool())
 
 	leadSvc := service.NewLeadService(leadRepo, redisQueue)
 	orgSvc := service.NewOrganizationService(orgRepo)
 	webhookSvc := service.NewWebhookService(webhookRepo)
+	apiKeyService := service.NewAPIKeyService(apiKeyRepo)
 
 	leadHandler := handler.NewLeadHandler(leadSvc)
 	leadListHandler := handler.NewLeadListHandler(leadSvc)
-
 	orgHandler := handler.NewOrganizationHandler(orgSvc)
 	webhookHandler := handler.NewWebhookHandler(webhookSvc)
+	apiKeyHandler := handler.NewAPIKeyHandler(apiKeyService)
 
 	adminLeadsHandler, err := handler.NewAdminLeadsHandler(leadSvc)
 	if err != nil {
@@ -113,6 +115,10 @@ func main() {
 	mux.HandleFunc("POST /api/v1/webhooks", webhookHandler.Create)
 	mux.HandleFunc("GET /api/v1/webhooks", webhookHandler.List)
 	mux.HandleFunc("DELETE /api/v1/webhooks/", webhookHandler.Delete)
+
+	mux.HandleFunc("POST /api/v1/api-keys", apiKeyHandler.Create)
+	mux.HandleFunc("GET /api/v1/api-keys", apiKeyHandler.List)
+	mux.HandleFunc("DELETE /api/v1/api-keys", apiKeyHandler.Delete)
 
 	server := &http.Server{
 		Addr:              cfg.HTTPAddr,
