@@ -7,13 +7,16 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
+	"leadflow/internal/platform/bitrix24"
 	"leadflow/internal/platform/database"
 	"leadflow/internal/platform/queue"
 	"leadflow/internal/platform/telegram"
 	"leadflow/internal/repository"
+	"leadflow/internal/service"
 )
 
 type config struct {
@@ -27,6 +30,8 @@ type config struct {
 	DBPassword string
 	DBName     string
 	DBSSLMode  string
+
+	Bitrix24WebhookURL string
 }
 
 func loadConfig() config {
@@ -41,6 +46,8 @@ func loadConfig() config {
 		DBPassword: getEnv("DB_PASSWORD", "leadflow"),
 		DBName:     getEnv("DB_NAME", "leadflow"),
 		DBSSLMode:  getEnv("DB_SSLMODE", "disable"),
+
+		Bitrix24WebhookURL: getEnv("BITRIX24_WEBHOOK_URL", ""),
 	}
 }
 
@@ -96,6 +103,9 @@ func main() {
 
 	leadRepo := repository.NewLeadRepo(db.Pool())
 
+	webhookRepo := repository.NewWebhookRepo(db.Pool())
+	webhookService := service.NewWebhookService(webhookRepo)
+
 	q := queue.NewRedisQueue(cfg.RedisAddr, "leads")
 
 	var tg *telegram.Client
@@ -104,6 +114,14 @@ func main() {
 		logger.Info("telegram client initialized", "chat_id", cfg.TelegramChatID)
 	} else {
 		logger.Warn("telegram not configured, notifications will be skipped")
+	}
+
+	var bx *bitrix24.Client
+	if cfg.Bitrix24WebhookURL != "" {
+		bx = bitrix24.NewClient(cfg.Bitrix24WebhookURL)
+		logger.Info("bitrix24 client initialized", "webhook_url", cfg.Bitrix24WebhookURL)
+	} else {
+		logger.Warn("bitrix24 not configured, leads will not be sent to CRM")
 	}
 
 	stopCh := make(chan os.Signal, 1)
@@ -197,6 +215,30 @@ func main() {
 
 					logger.Info("telegram message sent", "lead_id", ev.LeadID, "message_id", msgID)
 
+					if bx != nil {
+						name, lastName := splitName(lead.Name)
+
+						leadID, err := bx.CreateLead(ctx, bitrix24.CreateLeadParams{
+							Title:    fmt.Sprintf("Лид #%d из %s", lead.ID, lead.Source),
+							Name:     name,
+							LastName: lastName,
+							Phone:    deref(lead.Phone),
+							Email:    deref(lead.Email),
+							Comments: deref(lead.Message),
+						})
+						if err != nil {
+							logger.Error("failed to create lead in bitrix24", "error", err, "lead_id", lead.ID)
+						} else {
+							logger.Info("lead created in bitrix24", "lead_id", lead.ID, "bitrix_id", leadID)
+						}
+					}
+
+					if err := webhookService.SendWebhooks(ctx, lead); err != nil {
+						logger.Error("failed to send webhooks", "error", err, "lead_id", lead.ID)
+					} else {
+						logger.Info("webhooks sent", "lead_id", lead.ID)
+					}
+
 					now := time.Now()
 
 					if err := leadRepo.UpdateTelegramSent(ctx, ev.LeadID, msgID, now); err != nil {
@@ -212,4 +254,24 @@ func main() {
 			}
 		}
 	}
+}
+
+func splitName(fullName *string) (string, string) {
+	if fullName == nil || *fullName == "" {
+		return "", ""
+	}
+
+	parts := strings.SplitN(*fullName, " ", 2)
+	if len(parts) == 1 {
+		return parts[0], ""
+	}
+
+	return parts[0], parts[1]
+}
+
+func deref(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
 }
