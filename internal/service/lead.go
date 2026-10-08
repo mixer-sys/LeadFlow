@@ -28,6 +28,16 @@ type CreateLeadInput struct {
 	OrganizationID int64
 }
 
+type UpdateLeadInput struct {
+	ID             int64
+	Name           *string
+	Email          *string
+	Phone          *string
+	Message        *string
+	Source         *string
+	OrganizationID int64
+}
+
 type ListLeadsInput struct {
 	Limit  int
 	Offset int
@@ -57,6 +67,37 @@ func (s *LeadService) ListLeads(ctx context.Context, input ListLeadsInput) (*rep
 
 func (s *LeadService) CreateLead(ctx context.Context, input CreateLeadInput) (*domain.Lead, error) {
 	fmt.Fprintf(os.Stderr, "Before CreateLeadParams: org_id=%d\n", input.OrganizationID)
+
+	existing, err := s.repo.FindByContact(ctx, input.OrganizationID, input.Email, input.Phone)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "FindByContact error: %v\n", err)
+		return nil, err
+	}
+
+	if existing != nil {
+		fmt.Fprintf(os.Stderr, "DUPLICATE FOUND: lead_id=%d, email=%v, phone=%v\n", existing.ID, input.Email, input.Phone)
+
+		updated, err := s.UpdateLead(ctx, UpdateLeadInput{
+			ID:             existing.ID,
+			Name:           input.Name,
+			Email:          input.Email,
+			Phone:          input.Phone,
+			Message:        input.Message,
+			Source:         &input.Source,
+			OrganizationID: input.OrganizationID,
+		})
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "UpdateLead error: %v\n", err)
+			return nil, err
+		}
+
+		if err := s.queue.PublishLeadCreated(ctx, updated.ID); err != nil {
+			fmt.Fprintf(os.Stderr, "queue.PublishLeadCreated error: %v\n", err)
+		}
+
+		return updated, nil
+	}
+
 	params := repository.CreateLeadParams{
 		Source:         input.Source,
 		Name:           input.Name,
@@ -82,4 +123,18 @@ func (s *LeadService) CreateLead(ctx context.Context, input CreateLeadInput) (*d
 	}
 
 	return lead, nil
+}
+
+func (s *LeadService) UpdateLead(ctx context.Context, input UpdateLeadInput) (*domain.Lead, error) {
+	params := repository.UpdateLeadParams{
+		ID:             input.ID,
+		Name:           input.Name,
+		Email:          input.Email,
+		Phone:          input.Phone,
+		Message:        input.Message,
+		Source:         input.Source,
+		OrganizationID: input.OrganizationID,
+	}
+
+	return s.repo.Update(ctx, params)
 }

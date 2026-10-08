@@ -234,3 +234,106 @@ func (r *LeadRepo) UpdateTelegramSent(
 	)
 	return err
 }
+
+func (r *LeadRepo) FindByContact(ctx context.Context, orgID int64, email, phone *string) (*domain.Lead, error) {
+	if email == nil && phone == nil {
+		return nil, nil
+	}
+
+	query := `
+		SELECT id, created_at, updated_at, source, name, email, phone, message, status, processed_at, telegram_message_id, telegram_sent_at, telegram_retry_count, organization_id
+		FROM leads
+		WHERE organization_id = $1
+		 AND (
+		 	($2::text IS NOT NULL AND email = $2::text)
+			OR
+			($3::text IS NOT NULL AND phone = $3::text)	
+		 )
+		ORDER BY id DESC
+		LIMIT 1
+	`
+	var lead domain.Lead
+	err := r.pool.QueryRow(ctx, query, orgID, email, phone).Scan(
+		&lead.ID,
+		&lead.CreatedAt,
+		&lead.UpdatedAt,
+		&lead.Source,
+		&lead.Name,
+		&lead.Email,
+		&lead.Phone,
+		&lead.Message,
+		&lead.Status,
+		&lead.ProcessedAt,
+		&lead.TelegramMessageID,
+		&lead.TelegramSentAt,
+		&lead.TelegramRetryCount,
+		&lead.OrganizationID,
+	)
+
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return nil, nil
+		}
+		return nil, err
+	}
+
+	return &lead, nil
+}
+
+type UpdateLeadParams struct {
+	ID             int64
+	Name           *string
+	Email          *string
+	Phone          *string
+	Message        *string
+	Source         *string
+	OrganizationID int64
+}
+
+func (r *LeadRepo) Update(ctx context.Context, params UpdateLeadParams) (*domain.Lead, error) {
+	query := `
+		UPDATE leads
+		SET
+			name = COALESCE($2, name),
+			email = COALESCE($3, email),
+			phone = COALESCE($4, phone),
+			message = COALESCE($5, message),
+			source = COALESCE($6, source),
+			updated_at = NOW()
+		WHERE id = $1 AND organization_id = $7
+		RETURNING id, created_at, updated_at, source, name, email, phone, message, status, processed_at, telegram_message_id, telegram_sent_at, telegram_retry_count, organization_id
+	`
+
+	var lead domain.Lead
+	err := r.pool.QueryRow(
+		ctx, query,
+		params.ID,
+		params.Name,
+		params.Email,
+		params.Phone,
+		params.Message,
+		params.Source,
+		params.OrganizationID,
+	).Scan(
+		&lead.ID,
+		&lead.CreatedAt,
+		&lead.UpdatedAt,
+		&lead.Source,
+		&lead.Name,
+		&lead.Email,
+		&lead.Phone,
+		&lead.Message,
+		&lead.Status,
+		&lead.ProcessedAt,
+		&lead.TelegramMessageID,
+		&lead.TelegramSentAt,
+		&lead.TelegramRetryCount,
+		&lead.OrganizationID,
+	)
+
+	if err != nil {
+		return nil, err
+	}
+
+	return &lead, nil
+}
