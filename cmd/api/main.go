@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"leadflow/internal/handler"
+	"leadflow/internal/middleware"
 	"leadflow/internal/platform/database"
 	"leadflow/internal/platform/queue"
 	"leadflow/internal/repository"
@@ -105,10 +106,13 @@ func main() {
 
 	mux := http.NewServeMux()
 
+	apiKeyAuth := middleware.APIKeyAuth(apiKeyService)
+
 	mux.HandleFunc("GET /healthz", healthHandler)
-	mux.HandleFunc("POST /api/v1/leads", leadHandler.Create)
-	mux.Handle("GET /api/v1/leads", leadListHandler)
-	mux.Handle("GET /admin/leads", adminLeadsHandler)
+
+	mux.HandleFunc("POST /api/v1/leads", apiKeyAuth(http.HandlerFunc(leadHandler.Create)).ServeHTTP)
+	mux.Handle("GET /api/v1/leads", apiKeyAuth(leadListHandler))
+	mux.Handle("GET /admin/leads", apiKeyAuth(adminLeadsHandler))
 
 	mux.HandleFunc("POST /api/v1/organizations", orgHandler.Create)
 
