@@ -3,7 +3,6 @@ package repository
 import (
 	"context"
 	"fmt"
-	"os"
 	"time"
 
 	"leadflow/internal/domain"
@@ -167,10 +166,7 @@ func (r *LeadRepo) Create(ctx context.Context, params CreateLeadParams) (*domain
 				status, processed_at, telegram_message_id, telegram_sent_at,
 				telegram_retry_count, organization_id
 		`
-	fmt.Fprintf(os.Stderr,
-		"DB INSERT: source=%q, org_id=%d, name=%v, email=%v\n",
-		params.Source, params.OrganizationID, params.Name, params.Email,
-	)
+
 	var lead domain.Lead
 
 	err := r.pool.QueryRow(

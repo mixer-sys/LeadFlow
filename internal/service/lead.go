@@ -2,8 +2,6 @@ package service
 
 import (
 	"context"
-	"fmt"
-	"os"
 
 	"leadflow/internal/domain"
 	"leadflow/internal/platform/queue"
@@ -66,16 +64,14 @@ func (s *LeadService) ListLeads(ctx context.Context, input ListLeadsInput) (*rep
 }
 
 func (s *LeadService) CreateLead(ctx context.Context, input CreateLeadInput) (*domain.Lead, error) {
-	fmt.Fprintf(os.Stderr, "Before CreateLeadParams: org_id=%d\n", input.OrganizationID)
 
 	existing, err := s.repo.FindByContact(ctx, input.OrganizationID, input.Email, input.Phone)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "FindByContact error: %v\n", err)
+
 		return nil, err
 	}
 
 	if existing != nil {
-		fmt.Fprintf(os.Stderr, "DUPLICATE FOUND: lead_id=%d, email=%v, phone=%v\n", existing.ID, input.Email, input.Phone)
 
 		updated, err := s.UpdateLead(ctx, UpdateLeadInput{
 			ID:             existing.ID,
@@ -87,12 +83,12 @@ func (s *LeadService) CreateLead(ctx context.Context, input CreateLeadInput) (*d
 			OrganizationID: input.OrganizationID,
 		})
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "UpdateLead error: %v\n", err)
+
 			return nil, err
 		}
 
 		if err := s.queue.PublishLeadCreated(ctx, updated.ID); err != nil {
-			fmt.Fprintf(os.Stderr, "queue.PublishLeadCreated error: %v\n", err)
+
 		}
 
 		return updated, nil
@@ -106,12 +102,9 @@ func (s *LeadService) CreateLead(ctx context.Context, input CreateLeadInput) (*d
 		Message:        input.Message,
 		OrganizationID: input.OrganizationID,
 	}
-
-	fmt.Fprintf(os.Stderr, "After CreateLeadParams: org_id=%d\n", params.OrganizationID)
-
 	lead, err := s.repo.Create(ctx, params)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "repo.Create error: %v\n", err)
+
 		return nil, err
 	}
 
@@ -119,7 +112,7 @@ func (s *LeadService) CreateLead(ctx context.Context, input CreateLeadInput) (*d
 		ctx, lead.ID,
 	); err != nil {
 		// logging
-		fmt.Fprintf(os.Stderr, "queue.PublishLeadCreated error: %v\n", err)
+
 	}
 
 	return lead, nil

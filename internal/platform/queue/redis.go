@@ -14,6 +14,10 @@ type RedisQueue struct {
 	stream string
 }
 
+func (q *RedisQueue) Ping(ctx context.Context) error {
+	return q.client.Ping(ctx).Err()
+}
+
 func NewRedisQueue(addr, stream string) *RedisQueue {
 	client := redis.NewClient(&redis.Options{
 		Addr: addr,

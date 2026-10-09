@@ -2,10 +2,8 @@ package handler
 
 import (
 	"encoding/json"
-	"fmt"
 	"leadflow/internal/service"
 	"net/http"
-	"os"
 )
 
 type OrganizationHandler struct {
@@ -41,7 +39,6 @@ func (h *OrganizationHandler) Create(w http.ResponseWriter, r *http.Request) {
 
 	org, err := h.svc.CreateOrganization(r.Context(), input)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "create organization error: %v\n", err)
 		http.Error(w, `{"error":"internal error"}`, http.StatusInternalServerError)
 		return
 	}

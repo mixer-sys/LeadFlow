@@ -2,10 +2,8 @@ package handler
 
 import (
 	"encoding/json"
-	"fmt"
 	"leadflow/internal/service"
 	"net/http"
-	"os"
 	"strconv"
 )
 
@@ -147,7 +145,6 @@ func (h *LeadHandler) Create(w http.ResponseWriter, r *http.Request) {
 
 	lead, err := h.svc.CreateLead(r.Context(), input)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "create lead error: %v\n", err)
 		http.Error(w, `{"error":"internal error"}`, http.StatusInternalServerError)
 		return
 	}
@@ -157,7 +154,6 @@ func (h *LeadHandler) Create(w http.ResponseWriter, r *http.Request) {
 
 	err = json.NewEncoder(w).Encode(createLeadResponse{ID: lead.ID})
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "create lead error: %v\n", err)
 		http.Error(w, `{"error":"internal error"}`, http.StatusBadRequest)
 		return
 	}
