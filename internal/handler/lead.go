@@ -1,41 +1,117 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
-	"leadflow/internal/service"
+	"log/slog"
 	"net/http"
 	"strconv"
+
+	"leadflow/internal/domain"
+	"leadflow/internal/middleware"
+	"leadflow/internal/repository"
+	"leadflow/internal/service"
 )
 
-type LeadHandler struct {
-	svc *service.LeadService
+type LeadCreator interface {
+	CreateLead(ctx context.Context, input service.CreateLeadInput) (*domain.Lead, error)
 }
 
-func NewLeadHandler(svc *service.LeadService) *LeadHandler {
+type LeadLister interface {
+	ListLeads(ctx context.Context, input service.ListLeadsInput) (*repository.ListLeadsResult, error)
+}
+
+type LeadHandler struct {
+	svc LeadCreator
+}
+
+func NewLeadHandler(svc LeadCreator) *LeadHandler {
 	return &LeadHandler{
 		svc: svc,
 	}
 }
 
 type createLeadRequest struct {
-	Source         string  `json:"source"`
-	Name           *string `json:"name"`
-	Email          string  `json:"email"`
-	Phone          *string `json:"phone"`
-	Message        *string `json:"message"`
-	OrganizationID int64   `json:"organization_id"`
-}
-
-type LeadListHandler struct {
-	svc *service.LeadService
+	Source  string  `json:"source"`
+	Name    *string `json:"name"`
+	Email   string  `json:"email"`
+	Phone   *string `json:"phone"`
+	Message *string `json:"message"`
 }
 
 type createLeadResponse struct {
 	ID int64 `json:"id"`
 }
 
-func NewLeadListHandler(svc *service.LeadService) *LeadListHandler {
-	return &LeadListHandler{svc: svc}
+func (h *LeadHandler) Create(w http.ResponseWriter, r *http.Request) {
+	var req createLeadRequest
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(
+			w,
+			`{"error":"invalid json"}`,
+			http.StatusBadRequest,
+		)
+		return
+	}
+
+	if req.Source == "" {
+		http.Error(
+			w,
+			`{"error":"source is required"}`,
+			http.StatusBadRequest,
+		)
+		return
+	}
+
+	organizationID, ok := middleware.GetOrganizationIDFromContext(r)
+	if !ok {
+		http.Error(
+			w,
+			`{"error":"organization not found"}`,
+			http.StatusUnauthorized,
+		)
+		return
+	}
+
+	input := service.CreateLeadInput{
+		Source:         req.Source,
+		Name:           req.Name,
+		Email:          &req.Email,
+		Phone:          req.Phone,
+		Message:        req.Message,
+		OrganizationID: organizationID,
+	}
+
+	lead, err := h.svc.CreateLead(r.Context(), input)
+	if err != nil {
+		slog.Error("failed to create lead",
+			"error", err,
+			"organization_id", organizationID,
+			"source", req.Source,
+			"email", req.Email,
+		)
+
+		http.Error(
+			w,
+			`{"error":"internal error"}`,
+			http.StatusInternalServerError,
+		)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
+
+	if err := json.NewEncoder(w).Encode(createLeadResponse{
+		ID: lead.ID,
+	}); err != nil {
+		slog.Error("failed to encode response", "error", err)
+	}
+}
+
+type LeadListHandler struct {
+	svc LeadLister
 }
 
 type leadListItem struct {
@@ -51,6 +127,10 @@ type leadListItem struct {
 type listLeadsResponse struct {
 	Items []leadListItem `json:"items"`
 	Total int64          `json:"total"`
+}
+
+func NewLeadListHandler(svc LeadLister) *LeadListHandler {
+	return &LeadListHandler{svc: svc}
 }
 
 func (h *LeadListHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -77,7 +157,13 @@ func (h *LeadListHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		Offset: offset,
 	})
 	if err != nil {
-		http.Error(w, `{"error":"internal error"}`, http.StatusInternalServerError)
+		slog.Error("failed to list leads", "error", err)
+
+		http.Error(
+			w,
+			`{"error":"internal error"}`,
+			http.StatusInternalServerError,
+		)
 		return
 	}
 
@@ -118,43 +204,4 @@ func (h *LeadListHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(w).Encode(resp)
-}
-
-func (h *LeadHandler) Create(w http.ResponseWriter, r *http.Request) {
-	var req createLeadRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-
-		http.Error(w, `{"error":"invalid json"}`, http.StatusBadRequest)
-		return
-	}
-
-	if req.Source == "" {
-
-		http.Error(w, `{"error":"source is required"}`, http.StatusBadRequest)
-		return
-	}
-
-	input := service.CreateLeadInput{
-		Source:         req.Source,
-		Name:           req.Name,
-		Email:          &req.Email,
-		Phone:          req.Phone,
-		Message:        req.Message,
-		OrganizationID: req.OrganizationID,
-	}
-
-	lead, err := h.svc.CreateLead(r.Context(), input)
-	if err != nil {
-		http.Error(w, `{"error":"internal error"}`, http.StatusInternalServerError)
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusCreated)
-
-	err = json.NewEncoder(w).Encode(createLeadResponse{ID: lead.ID})
-	if err != nil {
-		http.Error(w, `{"error":"internal error"}`, http.StatusBadRequest)
-		return
-	}
 }

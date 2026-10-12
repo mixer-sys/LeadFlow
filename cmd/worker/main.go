@@ -11,12 +11,15 @@ import (
 	"syscall"
 	"time"
 
+	"leadflow/internal/domain"
 	"leadflow/internal/platform/bitrix24"
 	"leadflow/internal/platform/database"
 	"leadflow/internal/platform/queue"
 	"leadflow/internal/platform/telegram"
 	"leadflow/internal/repository"
 	"leadflow/internal/service"
+
+	"github.com/redis/go-redis/v9"
 )
 
 type config struct {
@@ -68,6 +71,7 @@ func getEnvInt64(key string, defaultVal int64) int64 {
 	if _, err := fmt.Sscanf(v, "%d", &val); err != nil {
 		return defaultVal
 	}
+
 	return val
 }
 
@@ -124,12 +128,37 @@ func main() {
 		logger.Warn("bitrix24 not configured, leads will not be sent to CRM")
 	}
 
+	processor := &leadProcessor{
+		logger:       logger,
+		leadRepo:     leadRepo,
+		webhookSvc:   webhookService,
+		tg:           tg,
+		bx:           bx,
+		telegramChat: cfg.TelegramChatID,
+	}
+
 	stopCh := make(chan os.Signal, 1)
 	signal.Notify(stopCh, syscall.SIGINT, syscall.SIGTERM)
 
 	logger.Info("worker started", "redis_addr", cfg.RedisAddr)
 
 	lastID := "0"
+
+	go func() {
+		ticker := time.NewTicker(30 * time.Second)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				if err := retryDueWebhooks(ctx, processor); err != nil {
+					logger.Error("failed to retry webhooks", "error", err)
+				}
+			}
+		}
+	}()
 
 	for {
 		select {
@@ -159,101 +188,87 @@ func main() {
 					continue
 				}
 
-				dataStr, ok = dataVal.(string)
-				if !ok {
-					continue
-				}
-
 				var ev queue.LeadCreatedEvent
 				if err := json.Unmarshal([]byte(dataStr), &ev); err != nil {
 					logger.Error("failed to unmarshal event", "error", err)
 					continue
 				}
 
-				logger.Info("received event", "lead_id", ev.LeadID, "msg_id", m.ID)
+				if err := processor.processLeadCreated(ctx, m, ev); err != nil {
+					logger.Error("failed to process event",
+						"error", err,
+						"msg_id", m.ID,
+					)
 
-				lead, err := leadRepo.GetByID(ctx, ev.LeadID)
-				if err != nil {
-					logger.Error("failed to get lead", "error", err, "lead_id", ev.LeadID)
+					delay := retryDelay()
+
+					logger.Warn("retrying event after delay",
+						"msg_id", m.ID,
+						"delay", delay.String(),
+					)
+
+					select {
+					case <-time.After(5 * time.Second):
+					case <-ctx.Done():
+						return
+					}
 					continue
-				}
-
-				if lead == nil {
-					logger.Warn("lead not found", "lead_id", ev.LeadID)
-					continue
-				}
-
-				if lead.TelegramMessageID != nil && *lead.TelegramMessageID != 0 {
-					logger.Info("lead already notified, skipping", "lead_id", ev.LeadID, "telegram_message_id", *lead.TelegramMessageID)
-					lastID = m.ID
-					continue
-				}
-
-				if err != nil {
-
-				}
-
-				if tg != nil {
-					text := fmt.Sprintf("🔔 Новая заявка\nLead ID: %d", ev.LeadID)
-
-					msgID, err := tg.SendMessage(ctx, telegram.SendMessageParams{
-						ChatID: cfg.TelegramChatID,
-						Text:   text,
-					})
-					if err != nil {
-						logger.Error("failed to send telegram message", "error", err, "lead_id", ev.LeadID)
-
-						logger.Error("failed to send telegram message", "error", err, "lead_id", ev.LeadID)
-
-						const maxRetries = 5
-						if err := leadRepo.IncrTelegramRetryCount(ctx, ev.LeadID, maxRetries); err != nil {
-							logger.Error("failed to increment retry count", "error", err, "lead_id", ev.LeadID)
-						}
-
-						continue
-					}
-
-					logger.Info("telegram message sent", "lead_id", ev.LeadID, "message_id", msgID)
-
-					if bx != nil {
-						name, lastName := splitName(lead.Name)
-
-						leadID, err := bx.CreateLead(ctx, bitrix24.CreateLeadParams{
-							Title:    fmt.Sprintf("Лид #%d из %s", lead.ID, lead.Source),
-							Name:     name,
-							LastName: lastName,
-							Phone:    deref(lead.Phone),
-							Email:    deref(lead.Email),
-							Comments: deref(lead.Message),
-						})
-						if err != nil {
-							logger.Error("failed to create lead in bitrix24", "error", err, "lead_id", lead.ID)
-						} else {
-							logger.Info("lead created in bitrix24", "lead_id", lead.ID, "bitrix_id", leadID)
-						}
-					}
-
-					if err := webhookService.SendWebhooks(ctx, lead); err != nil {
-						logger.Error("failed to send webhooks", "error", err, "lead_id", lead.ID)
-					} else {
-						logger.Info("webhooks sent", "lead_id", lead.ID)
-					}
-
-					now := time.Now()
-
-					if err := leadRepo.UpdateTelegramSent(ctx, ev.LeadID, msgID, now); err != nil {
-						logger.Error("failed to update lead in database", "error", err, "lead_id", ev.LeadID)
-					} else {
-						logger.Info("lead updated in database", "lead_id", ev.LeadID, "message_id", msgID)
-					}
 				}
 
 				lastID = m.ID
-
-				// sent TG Message
 			}
 		}
 	}
+}
+
+func retryDueWebhooks(
+	ctx context.Context,
+	p *leadProcessor,
+) error {
+	deliveries, err := p.webhookSvc.GetDueDeliveries(ctx, 50)
+	if err != nil {
+		return err
+	}
+
+	var lead *domain.Lead
+	for _, delivery := range deliveries {
+		if lead, err = p.leadRepo.GetByID(ctx, delivery.LeadID); err != nil {
+			p.logger.Error("failed to retry webhook delivery",
+				"error", err,
+				"delivery_id", delivery.ID,
+			)
+			continue
+		}
+
+		webhook, err := p.webhookSvc.GetWebhookByID(
+			ctx,
+			delivery.WebhookID,
+		)
+		if err != nil {
+			p.logger.Error("failed to get webhook for retry",
+				"error", err,
+				"webhook_id", delivery.WebhookID)
+			continue
+		}
+
+		err = p.webhookSvc.RetryDelivery(
+			ctx,
+			webhook,
+			lead,
+			&delivery,
+		)
+		if err != nil {
+			p.logger.Error("failed to retry webhook delivery",
+				"error", err,
+				"delivery_id", delivery.ID)
+		}
+	}
+
+	return nil
+}
+
+func retryDelay() time.Duration {
+	return 5 * time.Second
 }
 
 func splitName(fullName *string) (string, string) {
@@ -274,4 +289,160 @@ func deref(s *string) string {
 		return ""
 	}
 	return *s
+}
+
+const maxTelegramRetries = 5
+
+type leadProcessor struct {
+	logger       *slog.Logger
+	leadRepo     *repository.LeadRepo
+	webhookSvc   *service.WebhookService
+	tg           *telegram.Client
+	bx           *bitrix24.Client
+	telegramChat int64
+}
+
+func (p *leadProcessor) processLeadCreated(
+	ctx context.Context,
+	m redis.XMessage,
+	ev queue.LeadCreatedEvent,
+) error {
+	p.logger.Info("received event",
+		"lead_id", ev.LeadID,
+		"msg_id", m.ID,
+	)
+
+	lead, err := p.leadRepo.GetByID(ctx, ev.LeadID)
+	if err != nil {
+		p.logger.Error("failed to get lead",
+			"error", err,
+			"lead_id", ev.LeadID,
+		)
+		return fmt.Errorf("get lead %d: %w", ev.LeadID, err)
+	}
+
+	if lead == nil {
+		p.logger.Warn("lead not found", "lead_id", ev.LeadID)
+		return fmt.Errorf("lead not found: lead_id %d", ev.LeadID)
+	}
+
+	// Bitrix24
+	if p.bx != nil {
+		if lead.BitrixID == nil {
+			name, lastName := splitName(lead.Name)
+
+			bitrixID, err := p.bx.CreateLead(ctx, bitrix24.CreateLeadParams{
+				Title:    fmt.Sprintf("Lead #%d from %s", lead.ID, lead.Source),
+				Name:     name,
+				LastName: lastName,
+				Phone:    deref(lead.Phone),
+				Email:    deref(lead.Email),
+				Comments: deref(lead.Message),
+			})
+			if err != nil {
+				p.logger.Error("failed to create lead in bitrix24",
+					"error", err,
+					"lead_id", lead.ID,
+				)
+				return fmt.Errorf(
+					"create bitrix lead for lead %d: %w",
+					lead.ID,
+					err,
+				)
+			}
+
+			p.logger.Info("lead created in bitrix24",
+				"lead_id", lead.ID,
+				"bitrix_id", bitrixID,
+			)
+
+			if err := p.leadRepo.SetBitrixID(ctx, lead.ID, bitrixID); err != nil {
+				return fmt.Errorf(
+					"save bitrix id for lead %d: %w",
+					lead.ID,
+					err,
+				)
+			}
+		} else {
+			p.logger.Info("lead already exists in bitrix24, skipping",
+				"lead_id", lead.ID,
+				"bitrix_id", *lead.BitrixID,
+			)
+		}
+	} else {
+		p.logger.Warn("bitrix24 not configured, skipping CRM sync",
+			"lead_id", lead.ID,
+		)
+	}
+
+	// Webhooks
+	if err := p.webhookSvc.SendWebhooks(ctx, lead); err != nil {
+		p.logger.Error("failed to send webhooks",
+			"error", err,
+			"lead_id", lead.ID,
+		)
+		return fmt.Errorf("send webhooks for lead %d: %w", lead.ID, err)
+	} else {
+		p.logger.Info("webhooks sent", "lead_id", lead.ID)
+	}
+
+	// Telegram
+	if p.tg == nil {
+		p.logger.Warn("telegram not configured, skipping notification",
+			"lead_id", lead.ID,
+		)
+		return nil
+	}
+
+	if lead.TelegramMessageID != nil && *lead.TelegramMessageID != 0 {
+		p.logger.Info("lead already notified, skipping",
+			"lead_id", lead.ID,
+		)
+		return nil
+	}
+
+	if lead.TelegramRetryCount >= maxTelegramRetries {
+		p.logger.Error("telegram retry limit reached",
+			"lead_id", lead.ID,
+		)
+		return nil
+	}
+
+	text := fmt.Sprintf("🔔 Новая заявка\nLead ID: %d", ev.LeadID)
+
+	msgID, err := p.tg.SendMessage(ctx, telegram.SendMessageParams{
+		ChatID: p.telegramChat,
+		Text:   text,
+	})
+	if err != nil {
+		p.logger.Error("failed to send telegram message",
+			"error", err,
+			"lead_id", lead.ID,
+		)
+
+		if incrErr := p.leadRepo.IncrTelegramRetryCount(
+			ctx,
+			ev.LeadID,
+			maxTelegramRetries,
+			domain.LeadStatusFailed,
+		); incrErr != nil {
+			p.logger.Error("failed to increment retry count",
+				"error", incrErr,
+				"lead_id", lead.ID,
+			)
+		}
+
+		return fmt.Errorf(
+			"send telegram message for lead %d: %w",
+			lead.ID,
+			err,
+		)
+	}
+
+	p.logger.Info("telegram message sent",
+		"lead_id", lead.ID,
+		"message_id", msgID,
+	)
+
+	return nil
 }

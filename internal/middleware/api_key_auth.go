@@ -9,24 +9,51 @@ import (
 
 type contextKey string
 
-const apiKeyContextKey contextKey = "api_key"
+const (
+	apiKeyContextKey         contextKey = "api_key"
+	organizationIDContextKey contextKey = "organization_id"
+)
 
-func APIKeyAuth(svc *service.APIKeyService) func(http.Handler) http.Handler {
+func APIKeyAuth(
+	svc *service.APIKeyService,
+) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			apiKey := r.Header.Get("X-API-Key")
 			if apiKey == "" {
-				http.Error(w, `{"error":"missing X-API-Key header"}`, http.StatusUnauthorized)
+				http.Error(
+					w,
+					`{"error":"missing X-API-Key header"}`,
+					http.StatusUnauthorized,
+				)
 				return
 			}
 
-			valid, err := svc.ValidateKey(r.Context(), apiKey)
+			organizationID, valid, err := svc.ValidateKey(
+				r.Context(),
+				apiKey,
+			)
 			if err != nil || !valid {
-				http.Error(w, `{"error":"invalid API key"}`, http.StatusUnauthorized)
+				http.Error(
+					w,
+					`{"error":"invalid API key"}`,
+					http.StatusUnauthorized,
+				)
 				return
 			}
 
-			ctx := context.WithValue(r.Context(), apiKeyContextKey, apiKey)
+			ctx := context.WithValue(
+				r.Context(),
+				apiKeyContextKey,
+				apiKey,
+			)
+
+			ctx = context.WithValue(
+				ctx,
+				organizationIDContextKey,
+				organizationID,
+			)
+
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}
@@ -38,4 +65,14 @@ func GetAPIKeyFromContext(r *http.Request) string {
 	}
 
 	return ""
+}
+
+func GetOrganizationIDFromContext(r *http.Request) (int64, bool) {
+	if organizationID, ok := r.Context().Value(
+		organizationIDContextKey,
+	).(int64); ok {
+		return organizationID, true
+	}
+
+	return 0, false
 }

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 
+	"leadflow/internal/middleware"
 	"leadflow/internal/service"
 )
 
@@ -29,26 +30,49 @@ func (h *APIKeyHandler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	organizationID, ok := middleware.GetOrganizationIDFromContext(r)
+	if !ok {
+		http.Error(
+			w,
+			`{"error":"organization not found"}`,
+			http.StatusUnauthorized,
+		)
+		return
+	}
+
 	var req CreateAPIKeyRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "invalid request", http.StatusBadRequest)
+		http.Error(w, `{"error":"invalid request"}`, http.StatusBadRequest)
 		return
 	}
 
 	if req.Name == "" {
-		http.Error(w, "name is required", http.StatusBadRequest)
+		http.Error(
+			w,
+			`{"error":"name is required"}`,
+			http.StatusBadRequest,
+		)
 		return
 	}
 
-	key, err := h.svc.CreateAPIKey(r.Context(), req.Name)
+	key, err := h.svc.CreateAPIKey(
+		r.Context(),
+		req.Name,
+		organizationID,
+	)
 	if err != nil {
-		http.Error(w, "internal errror", http.StatusInternalServerError)
+		http.Error(
+			w,
+			`{"error":"internal error"}`,
+			http.StatusInternalServerError,
+		)
 		return
 	}
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
-	json.NewEncoder(w).Encode(CreateAPIKeyResponse{
+
+	_ = json.NewEncoder(w).Encode(CreateAPIKeyResponse{
 		Key: key,
 	})
 }
@@ -58,10 +82,11 @@ type ListAPIKeysResponse struct {
 }
 
 type APIKeyDTO struct {
-	ID       int64  `json:"id"`
-	Key      string `json:"key"`
-	Name     string `json:"name"`
-	IsActive bool   `json:"is_active"`
+	ID             int64  `json:"id"`
+	Key            string `json:"key"`
+	Name           string `json:"name"`
+	IsActive       bool   `json:"is_active"`
+	OrganizationID int64  `json:"organization_id"`
 }
 
 func (h *APIKeyHandler) List(w http.ResponseWriter, r *http.Request) {
@@ -72,22 +97,28 @@ func (h *APIKeyHandler) List(w http.ResponseWriter, r *http.Request) {
 
 	keys, err := h.svc.ListAPIKeys(r.Context())
 	if err != nil {
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		http.Error(
+			w,
+			`{"error":"internal error"}`,
+			http.StatusInternalServerError,
+		)
 		return
 	}
 
 	dto := make([]APIKeyDTO, 0, len(keys))
+
 	for _, k := range keys {
 		dto = append(dto, APIKeyDTO{
-			ID:       k.ID,
-			Key:      k.Key,
-			Name:     k.Name,
-			IsActive: k.IsActive,
+			ID:             k.ID,
+			Key:            k.Key,
+			Name:           k.Name,
+			IsActive:       k.IsActive,
+			OrganizationID: k.OrganizationID,
 		})
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(ListAPIKeysResponse{
+	_ = json.NewEncoder(w).Encode(ListAPIKeysResponse{
 		Keys: dto,
 	})
 }

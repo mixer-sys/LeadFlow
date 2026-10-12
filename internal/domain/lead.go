@@ -25,6 +25,7 @@ type Lead struct {
 	TelegramSentAt     *time.Time
 	TelegramRetryCount int
 	OrganizationID     int64
+	BitrixID           *int64
 }
 
 type CreateLeadParams struct {

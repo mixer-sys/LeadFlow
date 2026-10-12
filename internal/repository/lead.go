@@ -42,7 +42,22 @@ type CreateLeadParams struct {
 
 func (r *LeadRepo) GetByID(ctx context.Context, id int64) (*domain.Lead, error) {
 	query := `
-		SELECT id, created_at, updated_at, source, name, email, phone, message, status, processed_at, telegram_message_id, telegram_sent_at, telegram_retry_count, organization_id 
+		SELECT
+			id,
+			created_at,
+			updated_at,
+			source,
+			name,
+			email,
+			phone,
+			message,
+			status,
+			processed_at,
+			telegram_message_id,
+			telegram_sent_at,
+			telegram_retry_count,
+			organization_id,
+			bitrix_id
 		FROM leads
 		WHERE id = $1
 	`
@@ -66,6 +81,7 @@ func (r *LeadRepo) GetByID(ctx context.Context, id int64) (*domain.Lead, error) 
 		&lead.TelegramSentAt,
 		&lead.TelegramRetryCount,
 		&lead.OrganizationID,
+		&lead.BitrixID,
 	)
 	if err != nil {
 		if err == pgx.ErrNoRows {
@@ -81,37 +97,61 @@ func (r *LeadRepo) IncrTelegramRetryCount(
 	ctx context.Context,
 	id int64,
 	maxRetries int,
+	failedStatus domain.LeadStatus,
 ) error {
 	query := `
-	UPDATE leads
-	SET
-		telegram_retry_count = telegram_retry_count + 1,
-		status = CASE
-			WHEN telegram_retry_count + 1 >= $2 THEN $3
-		ELSE status
-		END,
-		updated_at = NOW()
+		UPDATE leads
+		SET
+			telegram_retry_count = telegram_retry_count + 1,
+			status = CASE
+				WHEN telegram_retry_count + 1 >= $2 THEN $3
+				ELSE status
+			END,
+			updated_at = NOW()
 		WHERE id = $1
 	`
+
 	_, err := r.pool.Exec(
 		ctx,
 		query,
 		id,
 		maxRetries,
-		domain.LeadStatusFailed,
+		failedStatus,
 	)
 	return err
 }
 
-func (r *LeadRepo) ListLeads(ctx context.Context, params ListLeadsParams) (*ListLeadsResult, error) {
+func (r *LeadRepo) ListLeads(
+	ctx context.Context,
+	params ListLeadsParams,
+) (*ListLeadsResult, error) {
 	var total int64
+
 	err := r.pool.QueryRow(ctx, "SELECT COUNT(*) FROM leads").Scan(&total)
 	if err != nil {
 		return nil, fmt.Errorf("count leads: %w", err)
 	}
 
 	query := `
-		SELECT id, created_at, updated_at, source, name, email, phone, message, status, processed_at, telegram_message_id, telegram_sent_at, telegram_retry_count, organization_id  FROM leads ORDER BY id DESC LIMIT $1 OFFSET $2
+		SELECT
+			id,
+			created_at,
+			updated_at,
+			source,
+			name,
+			email,
+			phone,
+			message,
+			status,
+			processed_at,
+			telegram_message_id,
+			telegram_sent_at,
+			telegram_retry_count,
+			organization_id,
+			bitrix_id
+		FROM leads
+		ORDER BY id DESC
+		LIMIT $1 OFFSET $2
 	`
 
 	rows, err := r.pool.Query(ctx, query, params.Limit, params.Offset)
@@ -140,6 +180,7 @@ func (r *LeadRepo) ListLeads(ctx context.Context, params ListLeadsParams) (*List
 			&lead.TelegramSentAt,
 			&lead.TelegramRetryCount,
 			&lead.OrganizationID,
+			&lead.BitrixID,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("scan lead: %w", err)
@@ -158,14 +199,40 @@ func (r *LeadRepo) ListLeads(ctx context.Context, params ListLeadsParams) (*List
 	}, nil
 }
 
-func (r *LeadRepo) Create(ctx context.Context, params CreateLeadParams) (*domain.Lead, error) {
+func (r *LeadRepo) Create(
+	ctx context.Context,
+	params CreateLeadParams,
+) (*domain.Lead, error) {
 	query := `
-		INSERT INTO leads (source, name, email, phone, message, status, organization_id, created_at, updated_at)
+		INSERT INTO leads (
+			source,
+			name,
+			email,
+			phone,
+			message,
+			status,
+			organization_id,
+			created_at,
+			updated_at
+		)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), NOW())
-		RETURNING id, created_at, updated_at, source, name, email, phone, message,
-				status, processed_at, telegram_message_id, telegram_sent_at,
-				telegram_retry_count, organization_id
-		`
+		RETURNING
+			id,
+			created_at,
+			updated_at,
+			source,
+			name,
+			email,
+			phone,
+			message,
+			status,
+			processed_at,
+			telegram_message_id,
+			telegram_sent_at,
+			telegram_retry_count,
+			organization_id,
+			bitrix_id
+	`
 
 	var lead domain.Lead
 
@@ -194,6 +261,7 @@ func (r *LeadRepo) Create(ctx context.Context, params CreateLeadParams) (*domain
 		&lead.TelegramSentAt,
 		&lead.TelegramRetryCount,
 		&lead.OrganizationID,
+		&lead.BitrixID,
 	)
 	if err != nil {
 		return nil, err
@@ -231,24 +299,45 @@ func (r *LeadRepo) UpdateTelegramSent(
 	return err
 }
 
-func (r *LeadRepo) FindByContact(ctx context.Context, orgID int64, email, phone *string) (*domain.Lead, error) {
+func (r *LeadRepo) FindByContact(
+	ctx context.Context,
+	orgID int64,
+	email, phone *string,
+) (*domain.Lead, error) {
 	if email == nil && phone == nil {
 		return nil, nil
 	}
 
 	query := `
-		SELECT id, created_at, updated_at, source, name, email, phone, message, status, processed_at, telegram_message_id, telegram_sent_at, telegram_retry_count, organization_id
+		SELECT
+			id,
+			created_at,
+			updated_at,
+			source,
+			name,
+			email,
+			phone,
+			message,
+			status,
+			processed_at,
+			telegram_message_id,
+			telegram_sent_at,
+			telegram_retry_count,
+			organization_id,
+			bitrix_id
 		FROM leads
 		WHERE organization_id = $1
-		 AND (
-		 	($2::text IS NOT NULL AND email = $2::text)
-			OR
-			($3::text IS NOT NULL AND phone = $3::text)	
-		 )
+			AND (
+				($2::text IS NOT NULL AND email = $2::text)
+				OR
+				($3::text IS NOT NULL AND phone = $3::text)
+			)
 		ORDER BY id DESC
 		LIMIT 1
 	`
+
 	var lead domain.Lead
+
 	err := r.pool.QueryRow(ctx, query, orgID, email, phone).Scan(
 		&lead.ID,
 		&lead.CreatedAt,
@@ -264,6 +353,7 @@ func (r *LeadRepo) FindByContact(ctx context.Context, orgID int64, email, phone 
 		&lead.TelegramSentAt,
 		&lead.TelegramRetryCount,
 		&lead.OrganizationID,
+		&lead.BitrixID,
 	)
 
 	if err != nil {
@@ -286,7 +376,10 @@ type UpdateLeadParams struct {
 	OrganizationID int64
 }
 
-func (r *LeadRepo) Update(ctx context.Context, params UpdateLeadParams) (*domain.Lead, error) {
+func (r *LeadRepo) Update(
+	ctx context.Context,
+	params UpdateLeadParams,
+) (*domain.Lead, error) {
 	query := `
 		UPDATE leads
 		SET
@@ -297,12 +390,29 @@ func (r *LeadRepo) Update(ctx context.Context, params UpdateLeadParams) (*domain
 			source = COALESCE($6, source),
 			updated_at = NOW()
 		WHERE id = $1 AND organization_id = $7
-		RETURNING id, created_at, updated_at, source, name, email, phone, message, status, processed_at, telegram_message_id, telegram_sent_at, telegram_retry_count, organization_id
+		RETURNING
+			id,
+			created_at,
+			updated_at,
+			source,
+			name,
+			email,
+			phone,
+			message,
+			status,
+			processed_at,
+			telegram_message_id,
+			telegram_sent_at,
+			telegram_retry_count,
+			organization_id,
+			bitrix_id
 	`
 
 	var lead domain.Lead
+
 	err := r.pool.QueryRow(
-		ctx, query,
+		ctx,
+		query,
 		params.ID,
 		params.Name,
 		params.Email,
@@ -325,6 +435,7 @@ func (r *LeadRepo) Update(ctx context.Context, params UpdateLeadParams) (*domain
 		&lead.TelegramSentAt,
 		&lead.TelegramRetryCount,
 		&lead.OrganizationID,
+		&lead.BitrixID,
 	)
 
 	if err != nil {
@@ -332,4 +443,25 @@ func (r *LeadRepo) Update(ctx context.Context, params UpdateLeadParams) (*domain
 	}
 
 	return &lead, nil
+}
+
+func (r *LeadRepo) SetBitrixID(
+	ctx context.Context,
+	leadID int64,
+	bitrixID int64,
+) error {
+	query := `
+		UPDATE leads
+		SET
+			bitrix_id = $2,
+			updated_at = NOW()
+		WHERE id = $1
+	`
+
+	_, err := r.pool.Exec(ctx, query, leadID, bitrixID)
+	if err != nil {
+		return fmt.Errorf("set bitrix id: %w", err)
+	}
+
+	return nil
 }

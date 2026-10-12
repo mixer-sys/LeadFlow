@@ -15,32 +15,68 @@ func NewAPIKeyRepo(pool *pgxpool.Pool) *APIKeyRepo {
 	return &APIKeyRepo{pool: pool}
 }
 
-func (r *APIKeyRepo) Create(ctx context.Context, key, name string) (int64, error) {
+func (r *APIKeyRepo) Create(
+	ctx context.Context,
+	key, name string,
+	organizationID int64,
+) (int64, error) {
 	query := `
-		INSERT INTO api_keys (key, name, is_active, created_at, updated_at)
-		VALUES ($1, $2, true, NOW(), NOW())
+		INSERT INTO api_keys (
+			key,
+			name,
+			is_active,
+			organization_id,
+			created_at,
+			updated_at
+		)
+		VALUES ($1, $2, true, $3, NOW(), NOW())
 		RETURNING id
 	`
 
 	var id int64
-	err := r.pool.QueryRow(ctx, query, key, name).Scan(&id)
+	err := r.pool.QueryRow(
+		ctx,
+		query,
+		key,
+		name,
+		organizationID,
+	).Scan(&id)
+
 	return id, err
 }
-
-func (r *APIKeyRepo) GetByKey(ctx context.Context, key string) (*string, error) {
+func (r *APIKeyRepo) GetByKey(
+	ctx context.Context,
+	key string,
+) (*domain.APIKey, error) {
 	query := `
-		SELECT name
+		SELECT
+			id,
+			key,
+			name,
+			is_active,
+			created_at,
+			updated_at,
+			organization_id
 		FROM api_keys
 		WHERE key = $1 AND is_active = true
 	`
 
-	var name string
-	err := r.pool.QueryRow(ctx, query, key).Scan(&name)
+	var apiKey domain.APIKey
+
+	err := r.pool.QueryRow(ctx, query, key).Scan(
+		&apiKey.ID,
+		&apiKey.Key,
+		&apiKey.Name,
+		&apiKey.IsActive,
+		&apiKey.CreatedAt,
+		&apiKey.UpdatedAt,
+		&apiKey.OrganizationID,
+	)
 	if err != nil {
 		return nil, err
 	}
 
-	return &name, nil
+	return &apiKey, nil
 }
 
 func (r *APIKeyRepo) List(ctx context.Context) ([]domain.APIKey, error) {

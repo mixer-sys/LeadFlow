@@ -23,16 +23,21 @@ func (s *APIKeyService) GenerateKey() (string, error) {
 	if _, err := rand.Read(bytes); err != nil {
 		return "", fmt.Errorf("generate random bytes: %w", err)
 	}
+
 	return hex.EncodeToString(bytes), nil
 }
 
-func (s *APIKeyService) CreateAPIKey(ctx context.Context, name string) (string, error) {
+func (s *APIKeyService) CreateAPIKey(
+	ctx context.Context,
+	name string,
+	organizationID int64,
+) (string, error) {
 	key, err := s.GenerateKey()
 	if err != nil {
 		return "", err
 	}
 
-	_, err = s.repo.Create(ctx, key, name)
+	_, err = s.repo.Create(ctx, key, name, organizationID)
 	if err != nil {
 		return "", err
 	}
@@ -40,12 +45,20 @@ func (s *APIKeyService) CreateAPIKey(ctx context.Context, name string) (string, 
 	return key, nil
 }
 
-func (s *APIKeyService) ValidateKey(ctx context.Context, key string) (bool, error) {
-	name, err := s.repo.GetByKey(ctx, key)
+func (s *APIKeyService) ValidateKey(
+	ctx context.Context,
+	key string,
+) (int64, bool, error) {
+	apiKey, err := s.repo.GetByKey(ctx, key)
 	if err != nil {
-		return false, err
+		return 0, false, err
 	}
-	return name != nil, nil
+
+	if apiKey == nil {
+		return 0, false, nil
+	}
+
+	return apiKey.OrganizationID, true, nil
 }
 
 func (s *APIKeyService) ListAPIKeys(ctx context.Context) ([]domain.APIKey, error) {
@@ -56,6 +69,10 @@ func (s *APIKeyService) DeleteAPIKey(ctx context.Context, id int64) error {
 	return s.repo.Delete(ctx, id)
 }
 
-func (s *APIKeyService) ToggleWebhookActive(ctx context.Context, id int64, isActive bool) error {
+func (s *APIKeyService) ToggleWebhookActive(
+	ctx context.Context,
+	id int64,
+	isActive bool,
+) error {
 	return s.repo.ToggleActive(ctx, id, isActive)
 }
