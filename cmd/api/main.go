@@ -100,6 +100,8 @@ func main() {
 	webhookHandler := handler.NewWebhookHandler(webhookSvc)
 	apiKeyHandler := handler.NewAPIKeyHandler(apiKeyService)
 
+	webhookAdminHandler := handler.NewWebhookAdminHandler(webhookSvc)
+
 	adminLeadsHandler, err := handler.NewAdminLeadsHandler(leadSvc)
 	if err != nil {
 		logger.Error("failed to create admin leads handler", "error", err)
@@ -128,6 +130,8 @@ func main() {
 	mux.HandleFunc("POST /api/v1/api-keys", apiKeyHandler.Create)
 	mux.HandleFunc("GET /api/v1/api-keys", apiKeyHandler.List)
 	mux.HandleFunc("DELETE /api/v1/api-keys", apiKeyHandler.Delete)
+
+	mux.HandleFunc("GET /admin/webhooks/deliveries/stats", apiKeyAuth(http.HandlerFunc(webhookAdminHandler.Stats)).ServeHTTP)
 
 	server := &http.Server{
 		Addr:              cfg.HTTPAddr,

@@ -17,6 +17,77 @@ type WebhookRepo struct {
 	pool *pgxpool.Pool
 }
 
+type DeliveryStats struct {
+	Pending      int
+	Failed       int
+	Delivered    int
+	DeadLetter   int
+	OpenBreakers int
+}
+
+func (r *WebhookRepo) GetDeliveryStats(
+	ctx context.Context,
+) (*DeliveryStats, error) {
+	query := `
+		SELECT
+			COUNT(d.id) FILTER (WHERE d.status = 'pending'),
+			COUNT(d.id) FILTER (WHERE d.status = 'failed' AND d.next_retry_at IS NOT NULL),
+			COUNT(d.id) FILTER (WHERE d.status = 'delivered'),
+			COUNT(d.id) FILTER (WHERE d.status = 'failed' AND d.next_retry_at IS NULL),
+			COUNT(w.id) FILTER (WHERE w.opened_until IS NOT NULL AND w.opened_until > NOW())
+		FROM webhook_deliveries d
+		LEFT JOIN webhooks w ON w.id = d.webhook_id
+	`
+
+	var stats DeliveryStats
+
+	err := r.pool.QueryRow(ctx, query).Scan(
+		&stats.Pending,
+		&stats.Failed,
+		&stats.Delivered,
+		&stats.DeadLetter,
+		&stats.OpenBreakers,
+	)
+
+	if err != nil {
+		return nil, fmt.Errorf("get delivery stats: %w", err)
+	}
+
+	return &stats, nil
+}
+
+func (r *WebhookRepo) ResetDeadLetterDelivery(
+	ctx context.Context,
+	deliveryID int64,
+) error {
+	query := `
+		UPDATE webhook_deliveries
+		SET
+			status = $2,
+			attempts = 0,
+			next_retry_at = NOW(),
+			last_error = NULL,
+			updated_at = NOW()
+		WHERE id = $1
+			AND status = $3
+			AND next_retry_at IS NULL
+	`
+
+	_, err := r.pool.Exec(
+		ctx,
+		query,
+		deliveryID,
+		domain.WebhookDeliveryPending,
+		domain.WebhookDeliveryFailed,
+	)
+
+	if err != nil {
+		return fmt.Errorf("reset dead letter delivery: %w", err)
+	}
+
+	return nil
+}
+
 func NewWebhookRepo(pool *pgxpool.Pool) *WebhookRepo {
 	return &WebhookRepo{pool: pool}
 }

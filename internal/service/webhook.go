@@ -480,3 +480,16 @@ func (s *WebhookService) RetryDelivery(
 
 	return nil
 }
+
+func (s *WebhookService) GetDeliveryStats(
+	ctx context.Context,
+) (*repository.DeliveryStats, error) {
+	return s.repo.GetDeliveryStats(ctx)
+}
+
+func (s *WebhookService) RetryDeadLetterDelivery(
+	ctx context.Context,
+	deliveryID int64,
+) error {
+	return s.repo.ResetDeadLetterDelivery(ctx, deliveryID)
+}
