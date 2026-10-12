@@ -11,14 +11,15 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
+
 	"leadflow/internal/handler"
 	"leadflow/internal/middleware"
 	"leadflow/internal/platform/database"
 	"leadflow/internal/platform/queue"
 	"leadflow/internal/repository"
 	"leadflow/internal/service"
-
-	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 type config struct {
@@ -132,6 +133,8 @@ func main() {
 	mux.HandleFunc("DELETE /api/v1/api-keys", apiKeyHandler.Delete)
 
 	mux.HandleFunc("GET /admin/webhooks/deliveries/stats", apiKeyAuth(http.HandlerFunc(webhookAdminHandler.Stats)).ServeHTTP)
+
+	mux.Handle("GET /metrics", promhttp.Handler())
 
 	server := &http.Server{
 		Addr:              cfg.HTTPAddr,

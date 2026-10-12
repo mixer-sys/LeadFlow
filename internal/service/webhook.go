@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"leadflow/internal/domain"
+	"leadflow/internal/metrics"
 	"leadflow/internal/repository"
 )
 
@@ -195,8 +196,15 @@ func (s *WebhookService) SendWebhook(
 
 	client := &http.Client{Timeout: 10 * time.Second}
 
+	start := time.Now()
+
 	resp, err := client.Do(req)
+
+	duration := time.Since(start).Seconds()
+
 	if err != nil {
+		metrics.ObserveDelivery("error", duration)
+
 		if handleErr := s.handleWebhookFailure(
 			ctx,
 			webhook,
@@ -208,9 +216,12 @@ func (s *WebhookService) SendWebhook(
 
 		return fmt.Errorf("send request: %w", err)
 	}
+
 	defer resp.Body.Close()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		metrics.ObserveDelivery("error", duration)
+
 		err := fmt.Errorf("unexpected status: %s", resp.Status)
 
 		if handleErr := s.handleWebhookFailure(
@@ -225,6 +236,8 @@ func (s *WebhookService) SendWebhook(
 		return err
 	}
 
+	metrics.ObserveDelivery("success", duration)
+
 	if err := s.repo.MarkDeliveryDelivered(ctx, delivery.ID); err != nil {
 		return fmt.Errorf("mark delivery delivered: %w", err)
 	}
@@ -232,6 +245,8 @@ func (s *WebhookService) SendWebhook(
 	if err := s.repo.MarkWebhookSuccess(ctx, webhook.ID); err != nil {
 		return fmt.Errorf("mark webhook success: %w", err)
 	}
+
+	metrics.WebhookCircuitBreakerOpen.Set(0)
 
 	slog.Info("webhook delivered",
 		"webhook_id", webhook.ID,
@@ -247,9 +262,15 @@ func (s *WebhookService) markDeliveryFailed(
 	delivery *domain.WebhookDelivery,
 	lastError string,
 ) error {
+	metrics.WebhookDeliveryRetriesTotal.Inc()
+
 	nextRetryAt := time.Now().Add(
 		webhookRetryDelay(delivery.Attempts),
 	)
+
+	if delivery.Attempts+1 >= delivery.MaxAttempts {
+		metrics.WebhookDeadLettersTotal.Inc()
+	}
 
 	err := s.repo.MarkDeliveryFailedWithRetry(
 		ctx,
@@ -298,6 +319,8 @@ func (s *WebhookService) handleWebhookFailure(
 
 		openedUntil = &openAt
 
+		metrics.WebhookCircuitBreakerOpen.Set(1)
+
 		slog.Warn("webhook circuit breaker opened",
 			"webhook_id", webhook.ID,
 			"failure_count", failureCount,
@@ -339,6 +362,7 @@ func derefString(s *string) string {
 	if s == nil {
 		return ""
 	}
+
 	return *s
 }
 
@@ -433,8 +457,15 @@ func (s *WebhookService) RetryDelivery(
 
 	client := &http.Client{Timeout: 10 * time.Second}
 
+	start := time.Now()
+
 	resp, err := client.Do(req)
+
+	duration := time.Since(start).Seconds()
+
 	if err != nil {
+		metrics.ObserveDelivery("error", duration)
+
 		if handleErr := s.handleWebhookFailure(
 			ctx,
 			*webhook,
@@ -446,9 +477,12 @@ func (s *WebhookService) RetryDelivery(
 
 		return fmt.Errorf("send request: %w", err)
 	}
+
 	defer resp.Body.Close()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		metrics.ObserveDelivery("error", duration)
+
 		err := fmt.Errorf("unexpected status: %s", resp.Status)
 
 		if handleErr := s.handleWebhookFailure(
@@ -463,6 +497,8 @@ func (s *WebhookService) RetryDelivery(
 		return err
 	}
 
+	metrics.ObserveDelivery("success", duration)
+
 	if err := s.repo.MarkDeliveryDelivered(ctx, delivery.ID); err != nil {
 		return fmt.Errorf("mark delivery delivered: %w", err)
 	}
@@ -470,6 +506,8 @@ func (s *WebhookService) RetryDelivery(
 	if err := s.repo.MarkWebhookSuccess(ctx, webhook.ID); err != nil {
 		return fmt.Errorf("mark webhook success: %w", err)
 	}
+
+	metrics.WebhookCircuitBreakerOpen.Set(0)
 
 	slog.Info("webhook delivery retried successfully",
 		"delivery_id", delivery.ID,
