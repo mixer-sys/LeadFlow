@@ -14,7 +14,28 @@ import (
 	"leadflow/internal/repository"
 )
 
-const maxWebhookAttempts = 5
+const (
+	maxWebhookAttempts      = 5
+	webhookFailureThreshold = 5
+	webhookBaseOpenDuration = 30 * time.Second
+	webhookMaxOpenDuration  = 10 * time.Minute
+)
+
+func webhookOpenDuration(failureCount int) time.Duration {
+	if failureCount < webhookFailureThreshold {
+		return 0
+	}
+
+	attempt := failureCount - webhookFailureThreshold + 1
+
+	delay := webhookBaseOpenDuration * time.Duration(1<<(attempt-1))
+
+	if delay > webhookMaxOpenDuration {
+		delay = webhookMaxOpenDuration
+	}
+
+	return delay
+}
 
 func webhookRetryDelay(attempt int) time.Duration {
 	if attempt < 1 {
@@ -61,8 +82,18 @@ func (s *WebhookService) SendWebhooks(
 	eventID := fmt.Sprintf("lead-%d-created", lead.ID)
 
 	for _, webhook := range webhooks {
-		err := s.SendWebhook(ctx, webhook, lead, eventID)
-		if err != nil {
+		if webhook.OpenedUntil != nil && webhook.OpenedUntil.After(time.Now()) {
+			slog.Info("webhook circuit breaker is open, skipping",
+				"webhook_id", webhook.ID,
+				"lead_id", lead.ID,
+				"event_id", eventID,
+				"opened_until", *webhook.OpenedUntil,
+			)
+
+			continue
+		}
+
+		if err := s.SendWebhook(ctx, webhook, lead, eventID); err != nil {
 			slog.Error("failed to deliver webhook",
 				"error", err,
 				"webhook_id", webhook.ID,
@@ -106,6 +137,7 @@ func (s *WebhookService) SendWebhook(
 			"lead_id", lead.ID,
 			"event_id", eventID,
 		)
+
 		return nil
 	}
 
@@ -165,22 +197,40 @@ func (s *WebhookService) SendWebhook(
 
 	resp, err := client.Do(req)
 	if err != nil {
-		if markErr := s.markDeliveryFailed(ctx, delivery, err.Error()); markErr != nil {
-			return fmt.Errorf("mark delivery failed: %w", markErr)
+		if handleErr := s.handleWebhookFailure(
+			ctx,
+			webhook,
+			delivery,
+			err.Error(),
+		); handleErr != nil {
+			return fmt.Errorf("handle webhook failure: %w", handleErr)
 		}
+
+		return fmt.Errorf("send request: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		err := fmt.Errorf("unexpected status: %s", resp.Status)
 
-		if markErr := s.markDeliveryFailed(ctx, delivery, err.Error()); markErr != nil {
-			return fmt.Errorf("mark delivery failed: %w", markErr)
+		if handleErr := s.handleWebhookFailure(
+			ctx,
+			webhook,
+			delivery,
+			err.Error(),
+		); handleErr != nil {
+			return fmt.Errorf("handle webhook failure: %w", handleErr)
 		}
+
+		return err
 	}
 
 	if err := s.repo.MarkDeliveryDelivered(ctx, delivery.ID); err != nil {
 		return fmt.Errorf("mark delivery delivered: %w", err)
+	}
+
+	if err := s.repo.MarkWebhookSuccess(ctx, webhook.ID); err != nil {
+		return fmt.Errorf("mark webhook success: %w", err)
 	}
 
 	slog.Info("webhook delivered",
@@ -223,6 +273,46 @@ func (s *WebhookService) markDeliveryFailed(
 	return nil
 }
 
+func (s *WebhookService) handleWebhookFailure(
+	ctx context.Context,
+	webhook domain.Webhook,
+	delivery *domain.WebhookDelivery,
+	lastError string,
+) error {
+	if err := s.markDeliveryFailed(
+		ctx,
+		delivery,
+		lastError,
+	); err != nil {
+		return err
+	}
+
+	failureCount := webhook.FailureCount + 1
+
+	var openedUntil *time.Time
+
+	if failureCount >= webhookFailureThreshold {
+		openAt := time.Now().Add(
+			webhookOpenDuration(failureCount),
+		)
+
+		openedUntil = &openAt
+
+		slog.Warn("webhook circuit breaker opened",
+			"webhook_id", webhook.ID,
+			"failure_count", failureCount,
+			"opened_until", openAt,
+		)
+	}
+
+	return s.repo.MarkWebhookFailure(
+		ctx,
+		webhook.ID,
+		failureCount,
+		openedUntil,
+	)
+}
+
 func (s *WebhookService) CreateWebhook(
 	ctx context.Context,
 	url string,
@@ -261,6 +351,7 @@ func (s *WebhookService) ListActiveURLs(
 	}
 
 	urls := make([]string, 0, len(webhooks))
+
 	for _, webhook := range webhooks {
 		urls = append(urls, webhook.URL)
 	}
@@ -290,8 +381,25 @@ func (s *WebhookService) RetryDelivery(
 	}
 
 	if delivery.Status == domain.WebhookDeliveryDelivered {
-		slog.Info("webhook delivery already delivered, skipping", "delivery_id", delivery.ID, "webhook_id", webhook.ID,
-			"lead_id", lead.ID)
+		slog.Info("webhook delivery already delivered, skipping",
+			"delivery_id", delivery.ID,
+			"webhook_id", webhook.ID,
+			"lead_id", lead.ID,
+			"event_id", delivery.EventID,
+		)
+
+		return nil
+	}
+
+	if webhook.OpenedUntil != nil && webhook.OpenedUntil.After(time.Now()) {
+		slog.Info("webhook circuit breaker is open, skipping retry",
+			"delivery_id", delivery.ID,
+			"webhook_id", webhook.ID,
+			"lead_id", lead.ID,
+			"event_id", delivery.EventID,
+			"opened_until", *webhook.OpenedUntil,
+		)
+
 		return nil
 	}
 
@@ -327,9 +435,15 @@ func (s *WebhookService) RetryDelivery(
 
 	resp, err := client.Do(req)
 	if err != nil {
-		if markErr := s.markDeliveryFailed(ctx, delivery, err.Error()); markErr != nil {
-			return fmt.Errorf("mark delivery failed: %w", markErr)
+		if handleErr := s.handleWebhookFailure(
+			ctx,
+			*webhook,
+			delivery,
+			err.Error(),
+		); handleErr != nil {
+			return fmt.Errorf("handle webhook failure: %w", handleErr)
 		}
+
 		return fmt.Errorf("send request: %w", err)
 	}
 	defer resp.Body.Close()
@@ -337,14 +451,24 @@ func (s *WebhookService) RetryDelivery(
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		err := fmt.Errorf("unexpected status: %s", resp.Status)
 
-		if markErr := s.markDeliveryFailed(ctx, delivery, err.Error()); markErr != nil {
-			return fmt.Errorf("mark delivery failed: %w", markErr)
+		if handleErr := s.handleWebhookFailure(
+			ctx,
+			*webhook,
+			delivery,
+			err.Error(),
+		); handleErr != nil {
+			return fmt.Errorf("handle webhook failure: %w", handleErr)
 		}
 
+		return err
 	}
 
 	if err := s.repo.MarkDeliveryDelivered(ctx, delivery.ID); err != nil {
 		return fmt.Errorf("mark delivery delivered: %w", err)
+	}
+
+	if err := s.repo.MarkWebhookSuccess(ctx, webhook.ID); err != nil {
+		return fmt.Errorf("mark webhook success: %w", err)
 	}
 
 	slog.Info("webhook delivery retried successfully",

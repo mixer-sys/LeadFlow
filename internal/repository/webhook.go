@@ -44,6 +44,8 @@ func (r *WebhookRepo) ListActive(
 			id,
 			url,
 			is_active,
+			failure_count,
+			opened_until,
 			created_at,
 			updated_at
 		FROM webhooks
@@ -66,6 +68,8 @@ func (r *WebhookRepo) ListActive(
 			&webhook.ID,
 			&webhook.URL,
 			&webhook.IsActive,
+			&webhook.FailureCount,
+			&webhook.OpenedUntil,
 			&webhook.CreatedAt,
 			&webhook.UpdatedAt,
 		)
@@ -151,6 +155,7 @@ func (r *WebhookRepo) GetDelivery(
 
 	return &delivery, nil
 }
+
 func (r *WebhookRepo) CreateDelivery(
 	ctx context.Context,
 	webhookID, leadID int64,
@@ -348,6 +353,8 @@ func (r *WebhookRepo) GetByID(
 			id,
 			url,
 			is_active,
+			failure_count,
+			opened_until,
 			created_at,
 			updated_at
 		FROM webhooks
@@ -360,14 +367,60 @@ func (r *WebhookRepo) GetByID(
 		&webhook.ID,
 		&webhook.URL,
 		&webhook.IsActive,
+		&webhook.FailureCount,
+		&webhook.OpenedUntil,
 		&webhook.CreatedAt,
 		&webhook.UpdatedAt,
 	)
+
 	if err != nil {
 		if err == pgx.ErrNoRows {
 			return nil, nil
 		}
 		return nil, err
 	}
+
 	return &webhook, nil
+}
+
+func (r *WebhookRepo) MarkWebhookSuccess(
+	ctx context.Context,
+	webhookID int64,
+) error {
+	query := `
+		UPDATE webhooks
+		SET
+			failure_count = 0,
+			opened_until = NULL,
+			updated_at = NOW()
+		WHERE id = $1
+	`
+
+	_, err := r.pool.Exec(ctx, query, webhookID)
+	return err
+}
+
+func (r *WebhookRepo) MarkWebhookFailure(
+	ctx context.Context,
+	webhookID int64,
+	failureCount int,
+	openedUntil *time.Time,
+) error {
+	query := `
+		UPDATE webhooks
+		SET
+			failure_count = $2,
+			opened_until = $3,
+			updated_at = NOW()
+		WHERE id = $1
+	`
+
+	_, err := r.pool.Exec(
+		ctx,
+		query,
+		webhookID,
+		failureCount,
+		openedUntil,
+	)
+	return err
 }

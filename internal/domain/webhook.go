@@ -11,23 +11,25 @@ const (
 )
 
 type WebhookDelivery struct {
-	ID        int64
-	WebhookID int64
-	LeadID    int64
-	EventID   string
-	Status    WebhookDeliveryStatus
-	Attempts  int
-	LastError *string
+	ID          int64
+	WebhookID   int64
+	LeadID      int64
+	EventID     string
+	Status      WebhookDeliveryStatus
+	Attempts    int
+	LastError   *string
 	NextRetryAt *time.Time
 	MaxAttempts int
-	CreatedAt time.Time
-	UpdatedAt time.Time
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
 }
 
 type Webhook struct {
-	ID        int64
-	URL       string
-	IsActive  bool
-	CreatedAt time.Time
-	UpdatedAt time.Time
+	ID           int64
+	URL          string
+	IsActive     bool
+	FailureCount int
+	OpenedUntil  *time.Time
+	CreatedAt    time.Time
+	UpdatedAt    time.Time
 }
