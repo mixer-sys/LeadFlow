@@ -45,3 +45,12 @@ groups:
         annotations:
           summary: "No successful webhook deliveries"
           description: "Webhooks are being attempted, but none have succeeded for 15 minutes."
+
+      - alert: LeadflowTestAlert
+        expr: vector(1)
+        for: 0m
+        labels:
+          severity: critical
+        annotations:
+          summary: "LeadFlow test alert"
+          description: "This is a test Telegram notification."

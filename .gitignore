@@ -7,6 +7,9 @@ bin/
 .env
 .env.*
 !.env.example
+.env
+*.env
+deploy/prometheus/.env
 
 # IDE
 .vscode/
