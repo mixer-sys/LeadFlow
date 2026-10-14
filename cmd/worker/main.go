@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"leadflow/internal/domain"
+	"leadflow/internal/middleware"
 	"leadflow/internal/platform/bitrix24"
 	"leadflow/internal/platform/database"
 	"leadflow/internal/platform/queue"
@@ -76,7 +77,8 @@ func getEnvInt64(key string, defaultVal int64) int64 {
 }
 
 type LeadCreatedEvent struct {
-	LeadID int64 `json:"lead_id"`
+	LeadID    int64  `json:"lead_id"`
+	RequestID string `json:"request_id"`
 }
 
 func main() {
@@ -178,13 +180,22 @@ func main() {
 			}
 
 			for _, m := range msgs {
-				dataVal, ok := m.Values["data"]
+				dataVal, ok := m.Values["payload"]
 				if !ok {
+					processor.logger.Warn("event payload field missing",
+						"msg_id", m.ID,
+						"fields", m.Values,
+					)
 					continue
 				}
 
 				dataStr, ok := dataVal.(string)
 				if !ok {
+					processor.logger.Warn(
+						"event payload is not a string",
+						"msg_id", m.ID,
+						"payload_type", fmt.Sprintf("%T", dataVal),
+					)
 					continue
 				}
 
@@ -307,22 +318,36 @@ func (p *leadProcessor) processLeadCreated(
 	m redis.XMessage,
 	ev queue.LeadCreatedEvent,
 ) error {
-	p.logger.Info("received event",
-		"lead_id", ev.LeadID,
-		"msg_id", m.ID,
+	ctx = middleware.WithRequestID(ctx, ev.RequestID)
+	p.logger.InfoContext(
+		ctx,
+		"received event",
+		slog.String("request_id", ev.RequestID),
+		slog.Int64("lead_id", ev.LeadID),
+		slog.String("msg_id", m.ID),
 	)
 
 	lead, err := p.leadRepo.GetByID(ctx, ev.LeadID)
 	if err != nil {
-		p.logger.Error("failed to get lead",
-			"error", err,
-			"lead_id", ev.LeadID,
+		p.logger.ErrorContext(
+			ctx,
+			"failed to get lead",
+			slog.String("request_id", ev.RequestID),
+			slog.Int64("lead_id", ev.LeadID),
+			slog.String("error", err.Error()),
 		)
+
 		return fmt.Errorf("get lead %d: %w", ev.LeadID, err)
 	}
 
 	if lead == nil {
-		p.logger.Warn("lead not found", "lead_id", ev.LeadID)
+		p.logger.WarnContext(
+			ctx,
+			"lead not found",
+			slog.String("request_id", ev.RequestID),
+			slog.Int64("lead_id", ev.LeadID),
+		)
+
 		return fmt.Errorf("lead not found: lead_id %d", ev.LeadID)
 	}
 
@@ -376,7 +401,7 @@ func (p *leadProcessor) processLeadCreated(
 	}
 
 	// Webhooks
-	if err := p.webhookSvc.SendWebhooks(ctx, lead); err != nil {
+	if err := p.webhookSvc.SendWebhooks(ctx, lead, ev.RequestID); err != nil {
 		p.logger.Error("failed to send webhooks",
 			"error", err,
 			"lead_id", lead.ID,

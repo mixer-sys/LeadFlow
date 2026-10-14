@@ -15,6 +15,7 @@ type WebhookDelivery struct {
 	WebhookID   int64
 	LeadID      int64
 	EventID     string
+	RequestID   string
 	Status      WebhookDeliveryStatus
 	Attempts    int
 	LastError   *string

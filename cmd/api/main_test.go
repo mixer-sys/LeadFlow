@@ -21,27 +21,3 @@ func TestHealthHandler(t *testing.T) {
 		t.Errorf("expected body %q, got %q", expected, body)
 	}
 }
-
-func TestStatusWriter_WriteHeader(t *testing.T) {
-	rr := httptest.NewRecorder()
-	sw := &statusWriter{ResponseWriter: rr}
-
-	sw.WriteHeader(http.StatusCreated)
-
-	if sw.status != http.StatusCreated {
-		t.Errorf("expected status %d, got %d", http.StatusCreated, sw.status)
-	}
-}
-
-func TestStatusWriter_DefaultStatus(t *testing.T) {
-	rr := httptest.NewRecorder()
-	sw := &statusWriter{
-		ResponseWriter: rr,
-	}
-
-	_, _ = sw.Write([]byte("ok"))
-
-	if sw.status != http.StatusOK {
-		t.Errorf("expected default status %d, got %d", http.StatusOK, sw.status)
-	}
-}

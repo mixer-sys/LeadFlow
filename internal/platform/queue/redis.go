@@ -30,33 +30,32 @@ func NewRedisQueue(addr, stream string) *RedisQueue {
 }
 
 type LeadCreatedEvent struct {
-	LeadID int64 `json:"lead_id"`
+	LeadID    int64  `json:"lead_id"`
+	RequestID string `json:"request_id"`
 }
 
-func (q *RedisQueue) PublishLeadCreated(ctx context.Context, leadID int64) error {
-	payload := LeadCreatedEvent{
-		LeadID: leadID,
+func (q *RedisQueue) PublishLeadCreated(
+	ctx context.Context,
+	leadID int64,
+	requestID string,
+) error {
+	event := map[string]interface{}{
+		"event":      "lead.created",
+		"lead_id":    leadID,
+		"request_id": requestID,
 	}
 
-	data, err := json.Marshal(payload)
+	body, err := json.Marshal(event)
 	if err != nil {
 		return fmt.Errorf("marshal lead created event: %w", err)
 	}
 
-	args := &redis.XAddArgs{
+	return q.client.XAdd(ctx, &redis.XAddArgs{
 		Stream: q.stream,
 		Values: map[string]interface{}{
-			"event": "lead.created",
-			"data":  string(data),
+			"payload": string(body),
 		},
-	}
-
-	_, err = q.client.XAdd(ctx, args).Result()
-	if err != nil {
-		return fmt.Errorf("xadd: %w", err)
-	}
-
-	return nil
+	}).Err()
 }
 
 func (q *RedisQueue) ReadLeadCreated(ctx context.Context, count int64, lastID string) ([]redis.XMessage, error) {

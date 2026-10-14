@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strconv"
 
+	"leadflow/internal/auth"
 	"leadflow/internal/domain"
 	"leadflow/internal/middleware"
 	"leadflow/internal/repository"
@@ -14,11 +15,18 @@ import (
 )
 
 type LeadCreator interface {
-	CreateLead(ctx context.Context, input service.CreateLeadInput) (*domain.Lead, error)
+	CreateLead(
+		ctx context.Context,
+		input service.CreateLeadInput,
+		requestID string,
+	) (*domain.Lead, error)
 }
 
 type LeadLister interface {
-	ListLeads(ctx context.Context, input service.ListLeadsInput) (*repository.ListLeadsResult, error)
+	ListLeads(
+		ctx context.Context,
+		input service.ListLeadsInput,
+	) (*repository.ListLeadsResult, error)
 }
 
 type LeadHandler struct {
@@ -52,6 +60,7 @@ func (h *LeadHandler) Create(w http.ResponseWriter, r *http.Request) {
 			`{"error":"invalid json"}`,
 			http.StatusBadRequest,
 		)
+
 		return
 	}
 
@@ -61,18 +70,22 @@ func (h *LeadHandler) Create(w http.ResponseWriter, r *http.Request) {
 			`{"error":"source is required"}`,
 			http.StatusBadRequest,
 		)
+
 		return
 	}
 
-	organizationID, ok := middleware.GetOrganizationIDFromContext(r)
+	organizationID, ok := auth.GetOrganizationIDFromContext(r)
 	if !ok {
 		http.Error(
 			w,
 			`{"error":"organization not found"}`,
 			http.StatusUnauthorized,
 		)
+
 		return
 	}
+
+	requestID := middleware.GetRequestID(r)
 
 	input := service.CreateLeadInput{
 		Source:         req.Source,
@@ -83,13 +96,19 @@ func (h *LeadHandler) Create(w http.ResponseWriter, r *http.Request) {
 		OrganizationID: organizationID,
 	}
 
-	lead, err := h.svc.CreateLead(r.Context(), input)
+	lead, err := h.svc.CreateLead(
+		r.Context(),
+		input,
+		requestID,
+	)
 	if err != nil {
-		slog.Error("failed to create lead",
-			"error", err,
-			"organization_id", organizationID,
-			"source", req.Source,
-			"email", req.Email,
+		slog.ErrorContext(
+			r.Context(),
+			"failed to create lead",
+			slog.String("request_id", requestID),
+			slog.Int64("organization_id", organizationID),
+			slog.String("source", req.Source),
+			slog.String("error", err.Error()),
 		)
 
 		http.Error(
@@ -97,8 +116,20 @@ func (h *LeadHandler) Create(w http.ResponseWriter, r *http.Request) {
 			`{"error":"internal error"}`,
 			http.StatusInternalServerError,
 		)
+
 		return
 	}
+
+	slog.InfoContext(
+		r.Context(),
+		"lead received",
+		slog.String("request_id", requestID),
+		slog.Int64("lead_id", lead.ID),
+		slog.String("source", lead.Source),
+		slog.Bool("has_email", lead.Email != nil),
+		slog.Bool("has_phone", lead.Phone != nil),
+		slog.Bool("has_message", lead.Message != nil),
+	)
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
@@ -106,7 +137,12 @@ func (h *LeadHandler) Create(w http.ResponseWriter, r *http.Request) {
 	if err := json.NewEncoder(w).Encode(createLeadResponse{
 		ID: lead.ID,
 	}); err != nil {
-		slog.Error("failed to encode response", "error", err)
+		slog.ErrorContext(
+			r.Context(),
+			"failed to encode response",
+			slog.String("request_id", requestID),
+			slog.String("error", err.Error()),
+		)
 	}
 }
 
@@ -157,13 +193,19 @@ func (h *LeadListHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		Offset: offset,
 	})
 	if err != nil {
-		slog.Error("failed to list leads", "error", err)
+		slog.ErrorContext(
+			r.Context(),
+			"failed to list leads",
+			slog.String("request_id", middleware.GetRequestID(r)),
+			slog.String("error", err.Error()),
+		)
 
 		http.Error(
 			w,
 			`{"error":"internal error"}`,
 			http.StatusInternalServerError,
 		)
+
 		return
 	}
 
@@ -203,5 +245,6 @@ func (h *LeadListHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
+
 	_ = json.NewEncoder(w).Encode(resp)
 }

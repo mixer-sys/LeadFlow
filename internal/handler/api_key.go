@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 
-	"leadflow/internal/middleware"
+	"leadflow/internal/auth"
 	"leadflow/internal/service"
 )
 
@@ -30,7 +30,7 @@ func (h *APIKeyHandler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	organizationID, ok := middleware.GetOrganizationIDFromContext(r)
+	organizationID, ok := auth.GetOrganizationIDFromContext(r)
 	if !ok {
 		http.Error(
 			w,

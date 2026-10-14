@@ -14,7 +14,10 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
+	"leadflow/internal/auth"
+	"leadflow/internal/config"
 	"leadflow/internal/handler"
+	"leadflow/internal/logging"
 	"leadflow/internal/middleware"
 	"leadflow/internal/platform/database"
 	"leadflow/internal/platform/queue"
@@ -22,45 +25,21 @@ import (
 	"leadflow/internal/service"
 )
 
-type config struct {
-	HTTPAddr string
-
-	DBHost     string
-	DBPort     string
-	DBUser     string
-	DBPassword string
-	DBName     string
-	DBSSLMode  string
-
-	RedisAddr string
-}
-
-func loadConfig() config {
-	return config{
-		HTTPAddr: getEnv("HTTP_ADDR", ":8080"),
-
-		DBHost:     getEnv("DB_HOST", "localhost"),
-		DBPort:     getEnv("DB_PORT", "5432"),
-		DBUser:     getEnv("DB_USER", "leadflow"),
-		DBPassword: getEnv("DB_PASSWORD", "leadflow"),
-		DBName:     getEnv("DB_NAME", "leadflow"),
-		DBSSLMode:  getEnv("DB_SSLMODE", "disable"),
-
-		RedisAddr: getEnv("REDIS_ADDR", "localhost:6379"),
-	}
-}
-
-func getEnv(key, defaultVal string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
-	}
-	return defaultVal
-}
-
 func main() {
-	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
+	cfg := config.New()
 
-	cfg := loadConfig()
+	logger := logging.New(logging.Config{
+		Level:  cfg.LogLevel,
+		Format: cfg.LogFormat,
+	})
+
+	slog.SetDefault(logger)
+
+	logger.Info("starting leadflow",
+		slog.String("http_addr", cfg.HTTPAddr),
+		slog.String("log_level", cfg.LogLevel),
+		slog.String("log_format", cfg.LogFormat),
+	)
 
 	ctx := context.Background()
 
@@ -79,6 +58,7 @@ func main() {
 		logger.Error("failed to connect to postgres", "error", err)
 		os.Exit(1)
 	}
+
 	defer func() {
 		_ = db.Close(ctx)
 	}()
@@ -111,14 +91,19 @@ func main() {
 
 	mux := http.NewServeMux()
 
-	apiKeyAuth := middleware.APIKeyAuth(apiKeyService)
+	apiKeyAuth := auth.APIKeyAuth(apiKeyService)
 
 	mux.HandleFunc("GET /healthz", healthHandler)
+
 	mux.HandleFunc("GET /readyz", func(w http.ResponseWriter, r *http.Request) {
 		readyHandler(w, r, db.Pool(), redisQueue)
 	})
 
-	mux.HandleFunc("POST /api/v1/leads", apiKeyAuth(http.HandlerFunc(leadHandler.Create)).ServeHTTP)
+	mux.HandleFunc(
+		"POST /api/v1/leads",
+		apiKeyAuth(http.HandlerFunc(leadHandler.Create)).ServeHTTP,
+	)
+
 	mux.Handle("GET /api/v1/leads", apiKeyAuth(leadListHandler))
 	mux.Handle("GET /admin/leads", apiKeyAuth(adminLeadsHandler))
 
@@ -132,13 +117,20 @@ func main() {
 	mux.HandleFunc("GET /api/v1/api-keys", apiKeyHandler.List)
 	mux.HandleFunc("DELETE /api/v1/api-keys", apiKeyHandler.Delete)
 
-	mux.HandleFunc("GET /admin/webhooks/deliveries/stats", apiKeyAuth(http.HandlerFunc(webhookAdminHandler.Stats)).ServeHTTP)
+	mux.HandleFunc(
+		"GET /admin/webhooks/deliveries/stats",
+		apiKeyAuth(http.HandlerFunc(webhookAdminHandler.Stats)).ServeHTTP,
+	)
 
 	mux.Handle("GET /metrics", promhttp.Handler())
 
+	var httpHandler http.Handler = mux
+
+	httpHandler = middleware.RequestLogging(logger)(httpHandler)
+
 	server := &http.Server{
 		Addr:              cfg.HTTPAddr,
-		Handler:           loggingMiddleware(logger, mux),
+		Handler:           httpHandler,
 		ReadTimeout:       10 * time.Second,
 		ReadHeaderTimeout: 5 * time.Second,
 		WriteTimeout:      30 * time.Second,
@@ -148,9 +140,12 @@ func main() {
 	errCh := make(chan error, 1)
 
 	go func() {
-		logger.Info("api server started", "address", server.Addr)
+		logger.Info("api server started",
+			slog.String("address", server.Addr),
+		)
 
-		if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		if err := server.ListenAndServe(); err != nil &&
+			!errors.Is(err, http.ErrServerClosed) {
 			errCh <- err
 		}
 	}()
@@ -160,48 +155,35 @@ func main() {
 
 	select {
 	case sig := <-stopCh:
-		logger.Info("shutdown signal received", "signal", sig.String())
+		logger.Info("shutdown signal received",
+			slog.String("signal", sig.String()),
+		)
+
 	case err := <-errCh:
 		logger.Error("api server failed", "error", err)
 		os.Exit(1)
 	}
 
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	shutdownCtx, cancel := context.WithTimeout(
+		context.Background(),
+		10*time.Second,
+	)
+
 	defer cancel()
 
 	if err := server.Shutdown(shutdownCtx); err != nil {
 		logger.Error("graceful shutdown failed", "error", err)
 		os.Exit(1)
 	}
+
 	logger.Info("api server stopped")
 }
 
 func healthHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
+
 	_, _ = w.Write([]byte(`{"status":"ok"}`))
-}
-
-type statusWriter struct {
-	http.ResponseWriter
-	status int
-}
-
-func (w *statusWriter) WriteHeader(status int) {
-	if w.status != 0 {
-		return
-	}
-
-	w.status = status
-	w.ResponseWriter.WriteHeader(status)
-}
-
-func (w *statusWriter) Write(body []byte) (int, error) {
-	if w.status == 0 {
-		w.WriteHeader(http.StatusOK)
-	}
-
-	return w.ResponseWriter.Write(body)
 }
 
 func readyHandler(
@@ -214,45 +196,27 @@ func readyHandler(
 	defer cancel()
 
 	if err := db.Ping(ctx); err != nil {
-		http.Error(w, `{"status":"not_ready","dependency":"postgres"}`, http.StatusServiceUnavailable)
+		http.Error(
+			w,
+			`{"status":"not_ready","dependency":"postgres"}`,
+			http.StatusServiceUnavailable,
+		)
+
 		return
 	}
 
 	if err := redisQueue.Ping(ctx); err != nil {
 		http.Error(
 			w,
-			`{"status":"not_ready", "dependency":"redis"}`,
+			`{"status":"not_ready","dependency":"redis"}`,
 			http.StatusServiceUnavailable,
 		)
+
 		return
 	}
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
+
 	_, _ = w.Write([]byte(`{"status":"ready"}`))
-}
-
-func loggingMiddleware(logger *slog.Logger, next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		startedAt := time.Now()
-
-		sw := &statusWriter{
-			ResponseWriter: w,
-		}
-
-		next.ServeHTTP(sw, r)
-
-		status := sw.status
-		if status == 0 {
-			status = http.StatusOK
-		}
-
-		logger.Info(
-			"http request completed",
-			"method", r.Method,
-			"path", r.URL.Path,
-			"status", status,
-			"duration", time.Since(startedAt).Microseconds(),
-		)
-	})
 }

@@ -29,6 +29,12 @@ func webhookOpenDuration(failureCount int) time.Duration {
 
 	attempt := failureCount - webhookFailureThreshold + 1
 
+	const maxShift = 6
+
+	if attempt > maxShift {
+		attempt = maxShift
+	}
+
 	delay := webhookBaseOpenDuration * time.Duration(1<<(attempt-1))
 
 	if delay > webhookMaxOpenDuration {
@@ -74,6 +80,7 @@ func (s *WebhookService) ListActiveWebhooks(
 func (s *WebhookService) SendWebhooks(
 	ctx context.Context,
 	lead *domain.Lead,
+	requestID string,
 ) error {
 	webhooks, err := s.ListActiveWebhooks(ctx)
 	if err != nil {
@@ -84,22 +91,34 @@ func (s *WebhookService) SendWebhooks(
 
 	for _, webhook := range webhooks {
 		if webhook.OpenedUntil != nil && webhook.OpenedUntil.After(time.Now()) {
-			slog.Info("webhook circuit breaker is open, skipping",
-				"webhook_id", webhook.ID,
-				"lead_id", lead.ID,
-				"event_id", eventID,
-				"opened_until", *webhook.OpenedUntil,
+			slog.InfoContext(
+				ctx,
+				"webhook circuit breaker is open, skipping",
+				slog.String("request_id", requestID),
+				slog.Int64("webhook_id", webhook.ID),
+				slog.Int64("lead_id", lead.ID),
+				slog.String("event_id", eventID),
+				slog.Time("opened_until", *webhook.OpenedUntil),
 			)
 
 			continue
 		}
 
-		if err := s.SendWebhook(ctx, webhook, lead, eventID); err != nil {
-			slog.Error("failed to deliver webhook",
-				"error", err,
-				"webhook_id", webhook.ID,
-				"lead_id", lead.ID,
-				"event_id", eventID,
+		if err := s.SendWebhook(
+			ctx,
+			webhook,
+			lead,
+			eventID,
+			requestID,
+		); err != nil {
+			slog.ErrorContext(
+				ctx,
+				"webhook delivery failed",
+				slog.String("request_id", requestID),
+				slog.String("error", err.Error()),
+				slog.Int64("webhook_id", webhook.ID),
+				slog.Int64("lead_id", lead.ID),
+				slog.String("event_id", eventID),
 			)
 
 			continue
@@ -121,6 +140,7 @@ func (s *WebhookService) SendWebhook(
 	webhook domain.Webhook,
 	lead *domain.Lead,
 	eventID string,
+	requestID string,
 ) error {
 	delivery, err := s.repo.GetDelivery(
 		ctx,
@@ -133,10 +153,13 @@ func (s *WebhookService) SendWebhook(
 	}
 
 	if delivery != nil && delivery.Status == domain.WebhookDeliveryDelivered {
-		slog.Info("webhook already delivered, skipping",
-			"webhook_id", webhook.ID,
-			"lead_id", lead.ID,
-			"event_id", eventID,
+		slog.InfoContext(
+			ctx,
+			"webhook already delivered, skipping",
+			slog.String("request_id", requestID),
+			slog.Int64("webhook_id", webhook.ID),
+			slog.Int64("lead_id", lead.ID),
+			slog.String("event_id", eventID),
 		)
 
 		return nil
@@ -147,6 +170,8 @@ func (s *WebhookService) SendWebhook(
 		webhook.ID,
 		lead.ID,
 		eventID,
+		requestID,
+		maxWebhookAttempts,
 	)
 	if err != nil {
 		return fmt.Errorf("create webhook delivery: %w", err)
@@ -248,10 +273,14 @@ func (s *WebhookService) SendWebhook(
 
 	metrics.WebhookCircuitBreakerOpen.Set(0)
 
-	slog.Info("webhook delivered",
-		"webhook_id", webhook.ID,
-		"lead_id", lead.ID,
-		"event_id", eventID,
+	slog.InfoContext(
+		ctx,
+		"webhook delivered",
+		slog.String("request_id", requestID),
+		slog.Int64("delivery_id", delivery.ID),
+		slog.Int64("webhook_id", webhook.ID),
+		slog.Int64("lead_id", lead.ID),
+		slog.String("event_id", eventID),
 	)
 
 	return nil
@@ -281,11 +310,14 @@ func (s *WebhookService) markDeliveryFailed(
 	)
 
 	if err != nil {
-		slog.Error("failed to mark webhook delivery failed",
-			"error", err,
-			"delivery_id", delivery.ID,
-			"lead_id", delivery.LeadID,
-			"event_id", delivery.EventID,
+		slog.ErrorContext(
+			ctx,
+			"failed to mark webhook delivery failed",
+			slog.String("request_id", delivery.RequestID),
+			slog.Int64("delivery_id", delivery.ID),
+			slog.Int64("lead_id", delivery.LeadID),
+			slog.String("event_id", delivery.EventID),
+			slog.String("error", err.Error()),
 		)
 
 		return err
@@ -321,10 +353,13 @@ func (s *WebhookService) handleWebhookFailure(
 
 		metrics.WebhookCircuitBreakerOpen.Set(1)
 
-		slog.Warn("webhook circuit breaker opened",
-			"webhook_id", webhook.ID,
-			"failure_count", failureCount,
-			"opened_until", openAt,
+		slog.WarnContext(
+			ctx,
+			"webhook circuit breaker opened",
+			slog.String("request_id", delivery.RequestID),
+			slog.Int64("webhook_id", webhook.ID),
+			slog.Int("failure_count", failureCount),
+			slog.Time("opened_until", openAt),
 		)
 	}
 
@@ -405,23 +440,29 @@ func (s *WebhookService) RetryDelivery(
 	}
 
 	if delivery.Status == domain.WebhookDeliveryDelivered {
-		slog.Info("webhook delivery already delivered, skipping",
-			"delivery_id", delivery.ID,
-			"webhook_id", webhook.ID,
-			"lead_id", lead.ID,
-			"event_id", delivery.EventID,
+		slog.InfoContext(
+			ctx,
+			"webhook delivery already delivered, skipping",
+			slog.String("request_id", delivery.RequestID),
+			slog.Int64("delivery_id", delivery.ID),
+			slog.Int64("webhook_id", webhook.ID),
+			slog.Int64("lead_id", lead.ID),
+			slog.String("event_id", delivery.EventID),
 		)
 
 		return nil
 	}
 
 	if webhook.OpenedUntil != nil && webhook.OpenedUntil.After(time.Now()) {
-		slog.Info("webhook circuit breaker is open, skipping retry",
-			"delivery_id", delivery.ID,
-			"webhook_id", webhook.ID,
-			"lead_id", lead.ID,
-			"event_id", delivery.EventID,
-			"opened_until", *webhook.OpenedUntil,
+		slog.InfoContext(
+			ctx,
+			"webhook circuit breaker is open, skipping retry",
+			slog.String("request_id", delivery.RequestID),
+			slog.Int64("delivery_id", delivery.ID),
+			slog.Int64("webhook_id", webhook.ID),
+			slog.Int64("lead_id", lead.ID),
+			slog.String("event_id", delivery.EventID),
+			slog.Time("opened_until", *webhook.OpenedUntil),
 		)
 
 		return nil
@@ -509,11 +550,14 @@ func (s *WebhookService) RetryDelivery(
 
 	metrics.WebhookCircuitBreakerOpen.Set(0)
 
-	slog.Info("webhook delivery retried successfully",
-		"delivery_id", delivery.ID,
-		"webhook_id", webhook.ID,
-		"lead_id", lead.ID,
-		"event_id", delivery.EventID,
+	slog.InfoContext(
+		ctx,
+		"webhook delivery retried successfully",
+		slog.String("request_id", delivery.RequestID),
+		slog.Int64("delivery_id", delivery.ID),
+		slog.Int64("webhook_id", webhook.ID),
+		slog.Int64("lead_id", lead.ID),
+		slog.String("event_id", delivery.EventID),
 	)
 
 	return nil

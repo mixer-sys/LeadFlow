@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"log/slog"
 
 	"leadflow/internal/domain"
 	"leadflow/internal/platform/queue"
@@ -13,8 +14,14 @@ type LeadService struct {
 	queue *queue.RedisQueue
 }
 
-func NewLeadService(repo *repository.LeadRepo, q *queue.RedisQueue) *LeadService {
-	return &LeadService{repo: repo, queue: q}
+func NewLeadService(
+	repo *repository.LeadRepo,
+	q *queue.RedisQueue,
+) *LeadService {
+	return &LeadService{
+		repo:  repo,
+		queue: q,
+	}
 }
 
 type CreateLeadInput struct {
@@ -46,7 +53,10 @@ type ListLeadsResult struct {
 	Total int64
 }
 
-func (s *LeadService) ListLeads(ctx context.Context, input ListLeadsInput) (*repository.ListLeadsResult, error) {
+func (s *LeadService) ListLeads(
+	ctx context.Context,
+	input ListLeadsInput,
+) (*repository.ListLeadsResult, error) {
 	if input.Limit <= 0 {
 		input.Limit = 50
 	}
@@ -63,16 +73,23 @@ func (s *LeadService) ListLeads(ctx context.Context, input ListLeadsInput) (*rep
 	return s.repo.ListLeads(ctx, params)
 }
 
-func (s *LeadService) CreateLead(ctx context.Context, input CreateLeadInput) (*domain.Lead, error) {
+func (s *LeadService) CreateLead(
+	ctx context.Context,
+	input CreateLeadInput,
+	requestID string,
+) (*domain.Lead, error) {
 
-	existing, err := s.repo.FindByContact(ctx, input.OrganizationID, input.Email, input.Phone)
+	existing, err := s.repo.FindByContact(
+		ctx,
+		input.OrganizationID,
+		input.Email,
+		input.Phone,
+	)
 	if err != nil {
-
 		return nil, err
 	}
 
 	if existing != nil {
-
 		updated, err := s.UpdateLead(ctx, UpdateLeadInput{
 			ID:             existing.ID,
 			Name:           input.Name,
@@ -83,12 +100,21 @@ func (s *LeadService) CreateLead(ctx context.Context, input CreateLeadInput) (*d
 			OrganizationID: input.OrganizationID,
 		})
 		if err != nil {
-
 			return nil, err
 		}
 
-		if err := s.queue.PublishLeadCreated(ctx, updated.ID); err != nil {
-
+		if err := s.queue.PublishLeadCreated(
+			ctx,
+			updated.ID,
+			requestID,
+		); err != nil {
+			slog.ErrorContext(
+				ctx,
+				"failed to publish lead created event",
+				slog.String("request_id", requestID),
+				slog.Int64("lead_id", updated.ID),
+				slog.String("error", err.Error()),
+			)
 		}
 
 		return updated, nil
@@ -102,23 +128,33 @@ func (s *LeadService) CreateLead(ctx context.Context, input CreateLeadInput) (*d
 		Message:        input.Message,
 		OrganizationID: input.OrganizationID,
 	}
+
 	lead, err := s.repo.Create(ctx, params)
 	if err != nil {
-
 		return nil, err
 	}
 
 	if err := s.queue.PublishLeadCreated(
-		ctx, lead.ID,
+		ctx,
+		lead.ID,
+		requestID,
 	); err != nil {
-		// logging
-
+		slog.ErrorContext(
+			ctx,
+			"failed to publish lead created event",
+			slog.String("request_id", requestID),
+			slog.Int64("lead_id", lead.ID),
+			slog.String("error", err.Error()),
+		)
 	}
 
 	return lead, nil
 }
 
-func (s *LeadService) UpdateLead(ctx context.Context, input UpdateLeadInput) (*domain.Lead, error) {
+func (s *LeadService) UpdateLead(
+	ctx context.Context,
+	input UpdateLeadInput,
+) (*domain.Lead, error) {
 	params := repository.UpdateLeadParams{
 		ID:             input.ID,
 		Name:           input.Name,

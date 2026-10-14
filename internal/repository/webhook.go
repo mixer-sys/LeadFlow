@@ -25,6 +25,10 @@ type DeliveryStats struct {
 	OpenBreakers int
 }
 
+func NewWebhookRepo(pool *pgxpool.Pool) *WebhookRepo {
+	return &WebhookRepo{pool: pool}
+}
+
 func (r *WebhookRepo) GetDeliveryStats(
 	ctx context.Context,
 ) (*DeliveryStats, error) {
@@ -88,10 +92,6 @@ func (r *WebhookRepo) ResetDeadLetterDelivery(
 	return nil
 }
 
-func NewWebhookRepo(pool *pgxpool.Pool) *WebhookRepo {
-	return &WebhookRepo{pool: pool}
-}
-
 func (r *WebhookRepo) Create(
 	ctx context.Context,
 	url string,
@@ -103,7 +103,9 @@ func (r *WebhookRepo) Create(
 	`
 
 	var id int64
+
 	err := r.pool.QueryRow(ctx, query, url).Scan(&id)
+
 	return id, err
 }
 
@@ -128,6 +130,7 @@ func (r *WebhookRepo) ListActive(
 	if err != nil {
 		return nil, err
 	}
+
 	defer rows.Close()
 
 	webhooks := make([]domain.Webhook, 0)
@@ -154,9 +157,14 @@ func (r *WebhookRepo) ListActive(
 	return webhooks, rows.Err()
 }
 
-func (r *WebhookRepo) Delete(ctx context.Context, id int64) error {
+func (r *WebhookRepo) Delete(
+	ctx context.Context,
+	id int64,
+) error {
 	query := `DELETE FROM webhooks WHERE id = $1`
+
 	_, err := r.pool.Exec(ctx, query, id)
+
 	return err
 }
 
@@ -172,12 +180,14 @@ func (r *WebhookRepo) ToggleActive(
 	`
 
 	_, err := r.pool.Exec(ctx, query, id, isActive)
+
 	return err
 }
 
 func (r *WebhookRepo) GetDelivery(
 	ctx context.Context,
-	webhookID, leadID int64,
+	webhookID int64,
+	leadID int64,
 	eventID string,
 ) (*domain.WebhookDelivery, error) {
 	query := `
@@ -186,9 +196,12 @@ func (r *WebhookRepo) GetDelivery(
 			webhook_id,
 			lead_id,
 			event_id,
+			request_id,
 			status,
 			attempts,
+			max_attempts,
 			last_error,
+			next_retry_at,
 			created_at,
 			updated_at
 		FROM webhook_deliveries
@@ -210,9 +223,12 @@ func (r *WebhookRepo) GetDelivery(
 		&delivery.WebhookID,
 		&delivery.LeadID,
 		&delivery.EventID,
+		&delivery.RequestID,
 		&delivery.Status,
 		&delivery.Attempts,
+		&delivery.MaxAttempts,
 		&delivery.LastError,
+		&delivery.NextRetryAt,
 		&delivery.CreatedAt,
 		&delivery.UpdatedAt,
 	)
@@ -221,6 +237,7 @@ func (r *WebhookRepo) GetDelivery(
 		if err == pgx.ErrNoRows {
 			return nil, nil
 		}
+
 		return nil, err
 	}
 
@@ -229,23 +246,28 @@ func (r *WebhookRepo) GetDelivery(
 
 func (r *WebhookRepo) CreateDelivery(
 	ctx context.Context,
-	webhookID, leadID int64,
+	webhookID int64,
+	leadID int64,
 	eventID string,
+	requestID string,
+	maxAttempts int,
 ) (int64, error) {
 	query := `
 		INSERT INTO webhook_deliveries (
 			webhook_id,
 			lead_id,
 			event_id,
+			request_id,
 			status,
 			attempts,
 			max_attempts,
 			created_at,
 			updated_at
 		)
-		VALUES ($1, $2, $3, $4, 1, $5, NOW(), NOW())
+		VALUES ($1, $2, $3, $4, $5, 1, $6, NOW(), NOW())
 		ON CONFLICT (webhook_id, lead_id, event_id)
 		DO UPDATE SET
+			request_id = EXCLUDED.request_id,
 			attempts = CASE
 				WHEN webhook_deliveries.status = 'delivered'
 					THEN webhook_deliveries.attempts
@@ -258,17 +280,23 @@ func (r *WebhookRepo) CreateDelivery(
 	`
 
 	var id int64
+
 	err := r.pool.QueryRow(
 		ctx,
 		query,
 		webhookID,
 		leadID,
 		eventID,
+		requestID,
 		domain.WebhookDeliveryPending,
-		maxWebhookAttempts,
+		maxAttempts,
 	).Scan(&id)
 
-	return id, err
+	if err != nil {
+		return 0, fmt.Errorf("create webhook delivery: %w", err)
+	}
+
+	return id, nil
 }
 
 func (r *WebhookRepo) MarkDeliveryDelivered(
@@ -290,6 +318,7 @@ func (r *WebhookRepo) MarkDeliveryDelivered(
 		deliveryID,
 		domain.WebhookDeliveryDelivered,
 	)
+
 	return err
 }
 
@@ -314,6 +343,7 @@ func (r *WebhookRepo) MarkDeliveryFailed(
 		domain.WebhookDeliveryFailed,
 		lastError,
 	)
+
 	return err
 }
 
@@ -367,11 +397,12 @@ func (r *WebhookRepo) FindDueDeliveries(
 			webhook_id,
 			lead_id,
 			event_id,
+			request_id,
 			status,
 			attempts,
+			max_attempts,
 			last_error,
 			next_retry_at,
-			max_attempts,
 			created_at,
 			updated_at
 		FROM webhook_deliveries
@@ -385,6 +416,7 @@ func (r *WebhookRepo) FindDueDeliveries(
 	if err != nil {
 		return nil, err
 	}
+
 	defer rows.Close()
 
 	deliveries := make([]domain.WebhookDelivery, 0)
@@ -397,11 +429,12 @@ func (r *WebhookRepo) FindDueDeliveries(
 			&delivery.WebhookID,
 			&delivery.LeadID,
 			&delivery.EventID,
+			&delivery.RequestID,
 			&delivery.Status,
 			&delivery.Attempts,
+			&delivery.MaxAttempts,
 			&delivery.LastError,
 			&delivery.NextRetryAt,
-			&delivery.MaxAttempts,
 			&delivery.CreatedAt,
 			&delivery.UpdatedAt,
 		)
@@ -448,6 +481,7 @@ func (r *WebhookRepo) GetByID(
 		if err == pgx.ErrNoRows {
 			return nil, nil
 		}
+
 		return nil, err
 	}
 
@@ -468,6 +502,7 @@ func (r *WebhookRepo) MarkWebhookSuccess(
 	`
 
 	_, err := r.pool.Exec(ctx, query, webhookID)
+
 	return err
 }
 
@@ -493,5 +528,6 @@ func (r *WebhookRepo) MarkWebhookFailure(
 		failureCount,
 		openedUntil,
 	)
+
 	return err
 }

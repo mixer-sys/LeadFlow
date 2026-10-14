@@ -1,4 +1,4 @@
-package middleware
+package auth
 
 import (
 	"context"
@@ -20,12 +20,14 @@ func APIKeyAuth(
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			apiKey := r.Header.Get("X-API-Key")
+
 			if apiKey == "" {
 				http.Error(
 					w,
 					`{"error":"missing X-API-Key header"}`,
 					http.StatusUnauthorized,
 				)
+
 				return
 			}
 
@@ -33,12 +35,14 @@ func APIKeyAuth(
 				r.Context(),
 				apiKey,
 			)
+
 			if err != nil || !valid {
 				http.Error(
 					w,
 					`{"error":"invalid API key"}`,
 					http.StatusUnauthorized,
 				)
+
 				return
 			}
 
