@@ -7,31 +7,33 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/propagation"
 )
+
+const readBlockTimeout = 100 * time.Millisecond
 
 type RedisQueue struct {
 	client *redis.Client
 	stream string
 }
 
-func (q *RedisQueue) Ping(ctx context.Context) error {
-	return q.client.Ping(ctx).Err()
-}
-
-func NewRedisQueue(addr, stream string) *RedisQueue {
-	client := redis.NewClient(&redis.Options{
-		Addr: addr,
-	})
-
+func NewRedisQueue(
+	addr string,
+	stream string,
+) *RedisQueue {
 	return &RedisQueue{
-		client: client,
+		client: redis.NewClient(&redis.Options{
+			Addr: addr,
+		}),
 		stream: stream,
 	}
 }
 
 type LeadCreatedEvent struct {
-	LeadID    int64  `json:"lead_id"`
-	RequestID string `json:"request_id"`
+	LeadID      int64  `json:"lead_id"`
+	RequestID   string `json:"request_id"`
+	Traceparent string `json:"traceparent,omitempty"`
 }
 
 func (q *RedisQueue) PublishLeadCreated(
@@ -39,13 +41,16 @@ func (q *RedisQueue) PublishLeadCreated(
 	leadID int64,
 	requestID string,
 ) error {
-	event := map[string]interface{}{
-		"event":      "lead.created",
-		"lead_id":    leadID,
-		"request_id": requestID,
+	carrier := propagation.MapCarrier{}
+	otel.GetTextMapPropagator().Inject(ctx, carrier)
+
+	event := LeadCreatedEvent{
+		LeadID:      leadID,
+		RequestID:   requestID,
+		Traceparent: carrier.Get("traceparent"),
 	}
 
-	body, err := json.Marshal(event)
+	data, err := json.Marshal(event)
 	if err != nil {
 		return fmt.Errorf("marshal lead created event: %w", err)
 	}
@@ -53,35 +58,46 @@ func (q *RedisQueue) PublishLeadCreated(
 	return q.client.XAdd(ctx, &redis.XAddArgs{
 		Stream: q.stream,
 		Values: map[string]interface{}{
-			"payload": string(body),
+			"payload": string(data),
 		},
 	}).Err()
 }
 
-func (q *RedisQueue) ReadLeadCreated(ctx context.Context, count int64, lastID string) ([]redis.XMessage, error) {
-	args := &redis.XReadArgs{
-		Streams: []string{q.stream, lastID},
-		Count:   count,
-		Block:   2 * time.Second,
+func (q *RedisQueue) ReadLeadCreated(
+	ctx context.Context,
+	count int,
+	lastID string,
+) ([]redis.XMessage, error) {
+	if lastID == "" {
+		lastID = "0"
 	}
 
-	msgs, err := q.client.XRead(ctx, args).Result()
+	result, err := q.client.XRead(ctx, &redis.XReadArgs{
+		Streams: []string{q.stream, lastID},
+		Count:   int64(count),
+		Block:   readBlockTimeout,
+	}).Result()
 	if err != nil {
 		if err == redis.Nil {
 			return nil, nil
 		}
-		return nil, fmt.Errorf("xread: %w", err)
+
+		return nil, fmt.Errorf("read lead created events: %w", err)
 	}
 
-	if len(msgs) == 0 {
-		return nil, nil
+	var messages []redis.XMessage
+
+	for _, stream := range result {
+		messages = append(messages, stream.Messages...)
 	}
 
-	stream := msgs[0]
-	return stream.Messages, nil
+	return messages, nil
 }
 
-func (q *RedisQueue) AckLeadCreated(ctx context.Context, stream, id string) error {
-	_, err := q.client.XAck(ctx, stream, id).Result()
-	return err
+func (q *RedisQueue) Ping(ctx context.Context) error {
+	return q.client.Ping(ctx).Err()
+}
+
+func (q *RedisQueue) Close() error {
+	return q.client.Close()
 }

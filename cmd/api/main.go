@@ -13,6 +13,9 @@ import (
 	"syscall"
 	"time"
 
+	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
+
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"google.golang.org/grpc"
@@ -27,6 +30,7 @@ import (
 	"leadflow/internal/middleware"
 	"leadflow/internal/platform/database"
 	"leadflow/internal/platform/queue"
+	"leadflow/internal/platform/telemetry"
 	"leadflow/internal/repository"
 	"leadflow/internal/service"
 )
@@ -48,6 +52,17 @@ func main() {
 	)
 
 	ctx := context.Background()
+
+	shutdownTracing, initTraceErr := telemetry.InitTracer(
+		ctx,
+		cfg.OTLPEndpoint,
+	)
+	if initTraceErr != nil {
+		logger.Error("failed to initialize tracing", "error", initTraceErr)
+		os.Exit(1)
+	}
+
+	defer shutdownTracing(context.Background())
 
 	dsn := fmt.Sprintf(
 		"postgres://%s:%s@%s:%s/%s?sslmode=%s",
@@ -76,6 +91,7 @@ func main() {
 	leadGRPC := grpchandler.NewLeadHandler(leadRepo, logger)
 
 	grpcServer := grpc.NewServer(
+		grpc.StatsHandler(otelgrpc.NewServerHandler()),
 		grpc.ChainUnaryInterceptor(
 			grpcmiddleware.RequestIDUnaryServerInterceptor(logger),
 			grpcmiddleware.AuthUnaryServerInterceptor(
@@ -96,7 +112,7 @@ func main() {
 
 	go func() {
 		if err := grpcServer.Serve(grpcListener); err != nil {
-			logger.Error("grepc server failed", "error", err)
+			logger.Error("grpc server failed", "error", err)
 		}
 	}()
 
@@ -151,7 +167,7 @@ func main() {
 
 	mux.HandleFunc("POST /api/v1/api-keys", apiKeyHandler.Create)
 	mux.HandleFunc("GET /api/v1/api-keys", apiKeyHandler.List)
-	mux.HandleFunc("DELETE /api/v1/api-keys", apiKeyHandler.Delete)
+	mux.HandleFunc("DELETE /api/v1/api-keys/", apiKeyHandler.Delete)
 
 	mux.HandleFunc(
 		"GET /admin/webhooks/deliveries/stats",
@@ -161,6 +177,11 @@ func main() {
 	mux.Handle("GET /metrics", promhttp.Handler())
 
 	var httpHandler http.Handler = mux
+
+	httpHandler = otelhttp.NewHandler(
+		httpHandler,
+		"leadflow-http",
+	)
 
 	httpHandler = middleware.RequestLogging(logger)(httpHandler)
 
@@ -195,7 +216,10 @@ func main() {
 			slog.String("signal", sig.String()),
 		)
 
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		shutdownCtx, cancel := context.WithTimeout(
+			context.Background(),
+			10*time.Second,
+		)
 		defer cancel()
 
 		_ = server.Shutdown(shutdownCtx)
@@ -203,18 +227,6 @@ func main() {
 
 	case err := <-errCh:
 		logger.Error("api server failed", "error", err)
-		os.Exit(1)
-	}
-
-	shutdownCtx, cancel := context.WithTimeout(
-		context.Background(),
-		10*time.Second,
-	)
-
-	defer cancel()
-
-	if err := server.Shutdown(shutdownCtx); err != nil {
-		logger.Error("graceful shutdown failed", "error", err)
 		os.Exit(1)
 	}
 

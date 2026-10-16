@@ -19,6 +19,8 @@ type config struct {
 	LogFormat string
 
 	GRPCInternalToken string
+
+	OTLPEndpoint string
 }
 
 func New() config {
@@ -39,6 +41,7 @@ func New() config {
 		LogFormat: getEnv("LOG_FORMAT", "json"),
 
 		GRPCInternalToken: getEnv("GRPC_INTERNAL_TOKEN", ""),
+		OTLPEndpoint:      getEnv("OTEL_EXPORTER_OTLP_ENDPOINT", ""),
 	}
 }
 

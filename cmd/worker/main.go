@@ -17,16 +17,25 @@ import (
 	"leadflow/internal/platform/database"
 	"leadflow/internal/platform/queue"
 	"leadflow/internal/platform/telegram"
+	"leadflow/internal/platform/telemetry"
 	"leadflow/internal/repository"
 	"leadflow/internal/service"
 
 	"github.com/redis/go-redis/v9"
+	"go.opentelemetry.io/otel"
+
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/trace"
 )
 
 type config struct {
 	RedisAddr        string
 	TelegramBotToken string
 	TelegramChatID   int64
+
+	OTLPEndpoint string
 
 	DBHost     string
 	DBPort     string
@@ -45,6 +54,8 @@ func loadConfig() config {
 		TelegramBotToken: getEnv("TELEGRAM_BOT_TOKEN", ""),
 		TelegramChatID:   getEnvInt64("TELEGRAM_CHAT_ID", 0),
 
+		OTLPEndpoint: getEnv("OTEL_EXPORTER_OTLP_ENDPOINT", ""),
+
 		DBHost:     getEnv("DB_HOST", "localhost"),
 		DBPort:     getEnv("DB_PORT", "5432"),
 		DBUser:     getEnv("DB_USER", "leadflow"),
@@ -61,6 +72,7 @@ func getEnv(key, defaultVal string) string {
 	if v := os.Getenv(key); v != "" {
 		return v
 	}
+
 	return defaultVal
 }
 
@@ -78,17 +90,23 @@ func getEnvInt64(key string, defaultVal int64) int64 {
 	return val
 }
 
-type LeadCreatedEvent struct {
-	LeadID    int64  `json:"lead_id"`
-	RequestID string `json:"request_id"`
-}
-
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 
 	cfg := loadConfig()
 
 	ctx := context.Background()
+
+	shutdownTracing, initTraceErr := telemetry.InitTracer(
+		ctx,
+		cfg.OTLPEndpoint,
+	)
+	if initTraceErr != nil {
+		logger.Error("failed to initialize tracing", "error", initTraceErr)
+		os.Exit(1)
+	}
+
+	defer shutdownTracing(context.Background())
 
 	dsn := fmt.Sprintf(
 		"postgres://%s:%s@%s:%s/%s?sslmode=%s",
@@ -105,6 +123,7 @@ func main() {
 		logger.Error("failed to connect to postgres", "error", err)
 		os.Exit(1)
 	}
+
 	defer func() {
 		_ = db.Close(ctx)
 	}()
@@ -132,8 +151,11 @@ func main() {
 		logger.Warn("bitrix24 not configured, leads will not be sent to CRM")
 	}
 
+	tracer := otel.Tracer("leadflow-worker")
+
 	processor := &leadProcessor{
 		logger:       logger,
+		tracer:       tracer,
 		leadRepo:     leadRepo,
 		webhookSvc:   webhookService,
 		tg:           tg,
@@ -184,10 +206,12 @@ func main() {
 			for _, m := range msgs {
 				dataVal, ok := m.Values["payload"]
 				if !ok {
-					processor.logger.Warn("event payload field missing",
+					processor.logger.Warn(
+						"event payload field missing",
 						"msg_id", m.ID,
 						"fields", m.Values,
 					)
+
 					continue
 				}
 
@@ -198,33 +222,41 @@ func main() {
 						"msg_id", m.ID,
 						"payload_type", fmt.Sprintf("%T", dataVal),
 					)
+
 					continue
 				}
 
 				var ev queue.LeadCreatedEvent
 				if err := json.Unmarshal([]byte(dataStr), &ev); err != nil {
-					logger.Error("failed to unmarshal event", "error", err)
+					logger.Error(
+						"failed to unmarshal event",
+						"error", err,
+					)
+
 					continue
 				}
 
 				if err := processor.processLeadCreated(ctx, m, ev); err != nil {
-					logger.Error("failed to process event",
+					logger.Error(
+						"failed to process event",
 						"error", err,
 						"msg_id", m.ID,
 					)
 
 					delay := retryDelay()
 
-					logger.Warn("retrying event after delay",
+					logger.Warn(
+						"retrying event after delay",
 						"msg_id", m.ID,
 						"delay", delay.String(),
 					)
 
 					select {
-					case <-time.After(5 * time.Second):
+					case <-time.After(delay):
 					case <-ctx.Done():
 						return
 					}
+
 					continue
 				}
 
@@ -238,18 +270,28 @@ func retryDueWebhooks(
 	ctx context.Context,
 	p *leadProcessor,
 ) error {
+	ctx, span := p.tracer.Start(ctx, "worker.retry-due-webhooks")
+	defer span.End()
+
 	deliveries, err := p.webhookSvc.GetDueDeliveries(ctx, 50)
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "failed to get due deliveries")
+
 		return err
 	}
 
 	var lead *domain.Lead
+
 	for _, delivery := range deliveries {
-		if lead, err = p.leadRepo.GetByID(ctx, delivery.LeadID); err != nil {
-			p.logger.Error("failed to retry webhook delivery",
+		lead, err = p.leadRepo.GetByID(ctx, delivery.LeadID)
+		if err != nil {
+			p.logger.Error(
+				"failed to retry webhook delivery",
 				"error", err,
 				"delivery_id", delivery.ID,
 			)
+
 			continue
 		}
 
@@ -258,9 +300,12 @@ func retryDueWebhooks(
 			delivery.WebhookID,
 		)
 		if err != nil {
-			p.logger.Error("failed to get webhook for retry",
+			p.logger.Error(
+				"failed to get webhook for retry",
 				"error", err,
-				"webhook_id", delivery.WebhookID)
+				"webhook_id", delivery.WebhookID,
+			)
+
 			continue
 		}
 
@@ -271,9 +316,11 @@ func retryDueWebhooks(
 			&delivery,
 		)
 		if err != nil {
-			p.logger.Error("failed to retry webhook delivery",
+			p.logger.Error(
+				"failed to retry webhook delivery",
 				"error", err,
-				"delivery_id", delivery.ID)
+				"delivery_id", delivery.ID,
+			)
 		}
 	}
 
@@ -301,6 +348,7 @@ func deref(s *string) string {
 	if s == nil {
 		return ""
 	}
+
 	return *s
 }
 
@@ -308,6 +356,7 @@ const maxTelegramRetries = 5
 
 type leadProcessor struct {
 	logger       *slog.Logger
+	tracer       trace.Tracer
 	leadRepo     *repository.LeadRepo
 	webhookSvc   *service.WebhookService
 	tg           *telegram.Client
@@ -320,7 +369,27 @@ func (p *leadProcessor) processLeadCreated(
 	m redis.XMessage,
 	ev queue.LeadCreatedEvent,
 ) error {
+	carrier := propagation.MapCarrier{
+		"traceparent": ev.Traceparent,
+	}
+
+	ctx = otel.GetTextMapPropagator().Extract(ctx, carrier)
+
+	ctx, span := p.tracer.Start(
+		ctx,
+		"worker.process-lead-created",
+		trace.WithSpanKind(trace.SpanKindConsumer),
+	)
+	defer span.End()
+
+	span.SetAttributes(
+		attribute.Int64("lead.id", ev.LeadID),
+		attribute.String("lead.request_id", ev.RequestID),
+		attribute.String("redis.message_id", m.ID),
+	)
+
 	ctx = middleware.WithRequestID(ctx, ev.RequestID)
+
 	p.logger.InfoContext(
 		ctx,
 		"received event",
@@ -331,6 +400,9 @@ func (p *leadProcessor) processLeadCreated(
 
 	lead, err := p.leadRepo.GetByID(ctx, ev.LeadID)
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "failed to get lead")
+
 		p.logger.ErrorContext(
 			ctx,
 			"failed to get lead",
@@ -343,6 +415,8 @@ func (p *leadProcessor) processLeadCreated(
 	}
 
 	if lead == nil {
+		span.SetStatus(codes.Error, "lead not found")
+
 		p.logger.WarnContext(
 			ctx,
 			"lead not found",
@@ -353,13 +427,22 @@ func (p *leadProcessor) processLeadCreated(
 		return fmt.Errorf("lead not found: lead_id %d", ev.LeadID)
 	}
 
-	// Bitrix24
 	if p.bx != nil {
 		if lead.BitrixID == nil {
+			ctx, bitrixSpan := p.tracer.Start(
+				ctx,
+				"bitrix24.create-lead",
+				trace.WithSpanKind(trace.SpanKindClient),
+			)
+
 			name, lastName := splitName(lead.Name)
 
 			bitrixID, err := p.bx.CreateLead(ctx, bitrix24.CreateLeadParams{
-				Title:    fmt.Sprintf("Lead #%d from %s", lead.ID, lead.Source),
+				Title: fmt.Sprintf(
+					"Lead #%d from %s",
+					lead.ID,
+					lead.Source,
+				),
 				Name:     name,
 				LastName: lastName,
 				Phone:    deref(lead.Phone),
@@ -367,10 +450,19 @@ func (p *leadProcessor) processLeadCreated(
 				Comments: deref(lead.Message),
 			})
 			if err != nil {
-				p.logger.Error("failed to create lead in bitrix24",
+				bitrixSpan.RecordError(err)
+				bitrixSpan.SetStatus(
+					codes.Error,
+					"failed to create lead in bitrix24",
+				)
+				bitrixSpan.End()
+
+				p.logger.Error(
+					"failed to create lead in bitrix24",
 					"error", err,
 					"lead_id", lead.ID,
 				)
+
 				return fmt.Errorf(
 					"create bitrix lead for lead %d: %w",
 					lead.ID,
@@ -378,7 +470,14 @@ func (p *leadProcessor) processLeadCreated(
 				)
 			}
 
-			p.logger.Info("lead created in bitrix24",
+			bitrixSpan.SetAttributes(
+				attribute.Int64("bitrix.lead_id", bitrixID),
+			)
+			bitrixSpan.SetStatus(codes.Ok, "lead created")
+			bitrixSpan.End()
+
+			p.logger.Info(
+				"lead created in bitrix24",
 				"lead_id", lead.ID,
 				"bitrix_id", bitrixID,
 			)
@@ -391,49 +490,71 @@ func (p *leadProcessor) processLeadCreated(
 				)
 			}
 		} else {
-			p.logger.Info("lead already exists in bitrix24, skipping",
+			p.logger.Info(
+				"lead already exists in bitrix24, skipping",
 				"lead_id", lead.ID,
 				"bitrix_id", *lead.BitrixID,
 			)
 		}
 	} else {
-		p.logger.Warn("bitrix24 not configured, skipping CRM sync",
+		p.logger.Warn(
+			"bitrix24 not configured, skipping CRM sync",
 			"lead_id", lead.ID,
 		)
 	}
 
-	// Webhooks
+	ctx, webhookSpan := p.tracer.Start(ctx, "webhook.send")
 	if err := p.webhookSvc.SendWebhooks(ctx, lead, ev.RequestID); err != nil {
-		p.logger.Error("failed to send webhooks",
+		webhookSpan.RecordError(err)
+		webhookSpan.SetStatus(codes.Error, "failed to send webhooks")
+		webhookSpan.End()
+
+		p.logger.Error(
+			"failed to send webhooks",
 			"error", err,
 			"lead_id", lead.ID,
 		)
+
 		return fmt.Errorf("send webhooks for lead %d: %w", lead.ID, err)
-	} else {
-		p.logger.Info("webhooks sent", "lead_id", lead.ID)
 	}
 
-	// Telegram
+	webhookSpan.SetStatus(codes.Ok, "webhooks sent")
+	webhookSpan.End()
+
+	p.logger.Info("webhooks sent", "lead_id", lead.ID)
+
 	if p.tg == nil {
-		p.logger.Warn("telegram not configured, skipping notification",
+		p.logger.Warn(
+			"telegram not configured, skipping notification",
 			"lead_id", lead.ID,
 		)
+
 		return nil
 	}
 
 	if lead.TelegramMessageID != nil && *lead.TelegramMessageID != 0 {
-		p.logger.Info("lead already notified, skipping",
+		p.logger.Info(
+			"lead already notified, skipping",
 			"lead_id", lead.ID,
 		)
+
 		return nil
 	}
 
 	if lead.TelegramRetryCount >= maxTelegramRetries {
-		p.logger.Error("telegram retry limit reached",
+		p.logger.Error(
+			"telegram retry limit reached",
 			"lead_id", lead.ID,
 		)
+
 		return nil
 	}
+
+	ctx, telegramSpan := p.tracer.Start(
+		ctx,
+		"telegram.send-message",
+		trace.WithSpanKind(trace.SpanKindClient),
+	)
 
 	text := fmt.Sprintf("🔔 Новая заявка\nLead ID: %d", ev.LeadID)
 
@@ -442,7 +563,15 @@ func (p *leadProcessor) processLeadCreated(
 		Text:   text,
 	})
 	if err != nil {
-		p.logger.Error("failed to send telegram message",
+		telegramSpan.RecordError(err)
+		telegramSpan.SetStatus(
+			codes.Error,
+			"failed to send telegram message",
+		)
+		telegramSpan.End()
+
+		p.logger.Error(
+			"failed to send telegram message",
 			"error", err,
 			"lead_id", lead.ID,
 		)
@@ -453,7 +582,8 @@ func (p *leadProcessor) processLeadCreated(
 			maxTelegramRetries,
 			domain.LeadStatusFailed,
 		); incrErr != nil {
-			p.logger.Error("failed to increment retry count",
+			p.logger.Error(
+				"failed to increment retry count",
 				"error", incrErr,
 				"lead_id", lead.ID,
 			)
@@ -466,7 +596,14 @@ func (p *leadProcessor) processLeadCreated(
 		)
 	}
 
-	p.logger.Info("telegram message sent",
+	telegramSpan.SetAttributes(
+		attribute.Int64("telegram.message_id", msgID),
+	)
+	telegramSpan.SetStatus(codes.Ok, "message sent")
+	telegramSpan.End()
+
+	p.logger.Info(
+		"telegram message sent",
 		"lead_id", lead.ID,
 		"message_id", msgID,
 	)
