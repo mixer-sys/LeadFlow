@@ -17,6 +17,8 @@ type config struct {
 	APIKey    string
 	LogLevel  string
 	LogFormat string
+
+	GRPCInternalToken string
 }
 
 func New() config {
@@ -35,6 +37,8 @@ func New() config {
 		APIKey:    getEnv("API_KEY", ""),
 		LogLevel:  getEnv("LOG_LEVEL", "info"),
 		LogFormat: getEnv("LOG_FORMAT", "json"),
+
+		GRPCInternalToken: getEnv("GRPC_INTERNAL_TOKEN", ""),
 	}
 }
 

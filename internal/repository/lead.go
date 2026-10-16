@@ -465,3 +465,63 @@ func (r *LeadRepo) SetBitrixID(
 
 	return nil
 }
+
+func (r *LeadRepo) List(
+	ctx context.Context,
+	limit int32,
+	afterID int64,
+) ([]*domain.Lead, error) {
+	if limit <= 0 {
+		limit = 10
+	}
+
+	if limit > 100 {
+		limit = 100
+	}
+
+	rows, err := r.pool.Query(ctx, `
+		SELECT id, source, name, email, phone, message, status,
+		       bitrix_id, telegram_message_id, telegram_retry_count,
+		       created_at, updated_at
+		FROM leads
+		WHERE id > $1
+		ORDER BY id ASC
+		LIMIT $2
+	`, afterID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list leads: %w", err)
+	}
+	defer rows.Close()
+
+	leads := make([]*domain.Lead, 0, limit)
+
+	for rows.Next() {
+		lead := &domain.Lead{}
+
+		err := rows.Scan(
+			&lead.ID,
+			&lead.Source,
+			&lead.Name,
+			&lead.Email,
+			&lead.Phone,
+			&lead.Message,
+			&lead.Status,
+			&lead.BitrixID,
+			&lead.TelegramMessageID,
+			&lead.TelegramRetryCount,
+			&lead.CreatedAt,
+			&lead.UpdatedAt,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("scan lead: %w", err)
+		}
+
+		leads = append(leads, lead)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate leads: %w", err)
+	}
+
+	return leads, nil
+}

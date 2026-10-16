@@ -36,6 +36,7 @@ type config struct {
 	DBSSLMode  string
 
 	Bitrix24WebhookURL string
+	GRPCInternalToken  string
 }
 
 func loadConfig() config {
@@ -52,6 +53,7 @@ func loadConfig() config {
 		DBSSLMode:  getEnv("DB_SSLMODE", "disable"),
 
 		Bitrix24WebhookURL: getEnv("BITRIX24_WEBHOOK_URL", ""),
+		GRPCInternalToken:  getEnv("GRPC_INTERNAL_TOKEN", ""),
 	}
 }
 

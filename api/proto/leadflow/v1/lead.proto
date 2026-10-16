@@ -1,2 +1,37 @@
 syntax = "proto3";
 
+package leadflow.v1;
+
+option go_package = "leadflow/api/gen/leadflow/v1;leadflowv1";
+
+service LeadService {
+  rpc GetLead(GetLeadRequest) returns (GetLeadResponse);
+  rpc ListLeads(ListLeadsRequest) returns (ListLeadsResponse);
+}
+
+message GetLeadRequest {
+  int64 lead_id = 1;
+}
+
+message GetLeadResponse {
+  int64 id = 1;
+  string source = 2;
+  string name = 3;
+  string email = 4;
+  string phone = 5;
+  string message = 6;
+  string status = 7;
+  optional int64 bitrix_id = 8;
+  optional int64 telegram_message_id = 9;
+  string created_at = 10;
+}
+
+message ListLeadsRequest {
+  int32 page_size = 1;
+  string page_token = 2;
+}
+
+message ListLeadsResponse {
+  repeated GetLeadResponse leads = 1;
+  string next_page_token = 2;
+}

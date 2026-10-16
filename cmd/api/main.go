@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	grpcmiddleware "leadflow/internal/middleware/grpc"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -13,10 +15,14 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/reflection"
 
+	leadflowv1 "leadflow/api/gen/leadflow/v1"
 	"leadflow/internal/auth"
 	"leadflow/internal/config"
 	"leadflow/internal/handler"
+	grpchandler "leadflow/internal/handler/grpc"
 	"leadflow/internal/logging"
 	"leadflow/internal/middleware"
 	"leadflow/internal/platform/database"
@@ -66,6 +72,36 @@ func main() {
 	redisQueue := queue.NewRedisQueue(cfg.RedisAddr, "leads")
 
 	leadRepo := repository.NewLeadRepo(db.Pool())
+
+	leadGRPC := grpchandler.NewLeadHandler(leadRepo, logger)
+
+	grpcServer := grpc.NewServer(
+		grpc.ChainUnaryInterceptor(
+			grpcmiddleware.RequestIDUnaryServerInterceptor(logger),
+			grpcmiddleware.AuthUnaryServerInterceptor(
+				logger,
+				cfg.GRPCInternalToken,
+			),
+		),
+	)
+
+	leadflowv1.RegisterLeadServiceServer(grpcServer, leadGRPC)
+	reflection.Register(grpcServer)
+
+	grpcListener, err := net.Listen("tcp", ":9090")
+	if err != nil {
+		logger.Error("failed to listen grpc", "error", err)
+		os.Exit(1)
+	}
+
+	go func() {
+		if err := grpcServer.Serve(grpcListener); err != nil {
+			logger.Error("grepc server failed", "error", err)
+		}
+	}()
+
+	logger.Info("grpc server started", "address", ":9090")
+
 	orgRepo := repository.NewOrganizationRepo(db.Pool())
 	webhookRepo := repository.NewWebhookRepo(db.Pool())
 	apiKeyRepo := repository.NewAPIKeyRepo(db.Pool())
@@ -158,6 +194,12 @@ func main() {
 		logger.Info("shutdown signal received",
 			slog.String("signal", sig.String()),
 		)
+
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
+		_ = server.Shutdown(shutdownCtx)
+		grpcServer.GracefulStop()
 
 	case err := <-errCh:
 		logger.Error("api server failed", "error", err)
