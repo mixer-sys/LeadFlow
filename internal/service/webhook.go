@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"math/rand"
@@ -87,11 +88,30 @@ func (s *WebhookService) SendWebhooks(
 		return fmt.Errorf("list active webhooks: %w", err)
 	}
 
+	if len(webhooks) == 0 {
+		slog.InfoContext(
+			ctx,
+			"no active webhooks configured",
+			slog.String("request_id", requestID),
+			slog.Int64("lead_id", lead.ID),
+		)
+
+		return nil
+	}
+
 	eventID := fmt.Sprintf("lead-%d-created", lead.ID)
+
+	var (
+		delivered int
+		skipped   int
+		errs      []error
+	)
 
 	for _, webhook := range webhooks {
 		if webhook.OpenedUntil != nil && webhook.OpenedUntil.After(time.Now()) {
-			slog.InfoContext(
+			skipped++
+
+			slog.WarnContext(
 				ctx,
 				"webhook circuit breaker is open, skipping",
 				slog.String("request_id", requestID),
@@ -104,25 +124,55 @@ func (s *WebhookService) SendWebhooks(
 			continue
 		}
 
-		if err := s.SendWebhook(
+		err := s.SendWebhook(
 			ctx,
 			webhook,
 			lead,
 			eventID,
 			requestID,
-		); err != nil {
-			slog.ErrorContext(
-				ctx,
-				"webhook delivery failed",
-				slog.String("request_id", requestID),
-				slog.String("error", err.Error()),
-				slog.Int64("webhook_id", webhook.ID),
-				slog.Int64("lead_id", lead.ID),
-				slog.String("event_id", eventID),
-			)
+		)
+
+		if err == nil {
+			delivered++
 
 			continue
 		}
+
+		errs = append(errs, fmt.Errorf(
+			"webhook %d: %w",
+			webhook.ID,
+			err,
+		))
+
+		slog.ErrorContext(
+			ctx,
+			"webhook delivery failed",
+			slog.String("request_id", requestID),
+			slog.String("error", err.Error()),
+			slog.Int64("webhook_id", webhook.ID),
+			slog.Int64("lead_id", lead.ID),
+			slog.String("event_id", eventID),
+		)
+	}
+
+	slog.InfoContext(
+		ctx,
+		"webhook delivery finished",
+		slog.String("request_id", requestID),
+		slog.Int64("lead_id", lead.ID),
+		slog.String("event_id", eventID),
+		slog.Int("webhooks_total", len(webhooks)),
+		slog.Int("webhooks_delivered", delivered),
+		slog.Int("webhooks_skipped", skipped),
+		slog.Int("webhooks_failed", len(errs)),
+	)
+
+	if len(errs) > 0 {
+		return fmt.Errorf(
+			"send webhooks for lead %d: %w",
+			lead.ID,
+			errors.Join(errs...),
+		)
 	}
 
 	return nil
