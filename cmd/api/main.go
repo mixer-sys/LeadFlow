@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"leadflow/internal/logger"
 	grpcmiddleware "leadflow/internal/middleware/grpc"
 	"log/slog"
 	"net"
@@ -26,7 +27,6 @@ import (
 	"leadflow/internal/config"
 	"leadflow/internal/handler"
 	grpchandler "leadflow/internal/handler/grpc"
-	"leadflow/internal/logging"
 	"leadflow/internal/middleware"
 	"leadflow/internal/platform/database"
 	"leadflow/internal/platform/queue"
@@ -38,7 +38,7 @@ import (
 func main() {
 	cfg := config.New()
 
-	logger := logging.New(logging.Config{
+	logger := logger.New(logger.Config{
 		Level:  cfg.LogLevel,
 		Format: cfg.LogFormat,
 	})

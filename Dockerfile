@@ -2,20 +2,28 @@ FROM golang:1.26-alpine AS builder
 
 WORKDIR /app
 
-RUN apk add --no-cache git ca-certificates
-
 COPY go.mod go.sum ./
 RUN go mod download
 
 COPY . .
 
-RUN CGO_ENABLED=0 GOOS=linux go build -o /leadflow-api ./cmd/api
-RUN CGO_ENABLED=0 GOOS=linux go build -o /leadflow-worker ./cmd/worker
+RUN CGO_ENABLED=0 GOOS=linux go build \
+  -ldflags="-s -w" \
+  -o /bin/leadflow-api ./cmd/api
 
-FROM scratch
+RUN CGO_ENABLED=0 GOOS=linux go build \
+  -o /bin/leadflow-worker ./cmd/worker
 
-COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
-COPY --from=builder /leadflow-api /leadflow-api
-COPY --from=builder /leadflow-worker /leadflow-worker
+FROM alpine:3.22
 
-ENTRYPOINT ["/leadflow-api"]
+RUN apk add --no-cache ca-certificates
+
+WORKDIR /app
+
+COPY --from=builder /bin/leadflow-api /bin/leadflow-api
+COPY --from=builder /bin/leadflow-worker /bin/leadflow-worker
+COPY --from=builder /app/templates ./templates
+
+EXPOSE 8080
+
+CMD ["/bin/leadflow-api"]

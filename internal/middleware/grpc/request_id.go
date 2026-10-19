@@ -8,7 +8,7 @@ import (
 	"log/slog"
 	"time"
 
-	"leadflow/internal/middleware"
+	log "leadflow/internal/logger"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -49,7 +49,7 @@ func RequestIDUnaryServerInterceptor(
 			requestID = generated
 		}
 
-		ctx = middleware.WithRequestID(ctx, requestID)
+		ctx = log.WithRequestID(ctx, requestID)
 
 		resp, err := handler(ctx, req)
 

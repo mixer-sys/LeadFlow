@@ -1,15 +1,14 @@
 package middleware
 
 import (
-	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"log/slog"
 	"net/http"
 	"time"
-)
 
-type requestIDKey struct{}
+	logging "leadflow/internal/logger"
+)
 
 const requestIDHeader = "X-Request-ID"
 
@@ -39,9 +38,8 @@ func RequestLogging(
 
 			w.Header().Set(requestIDHeader, requestID)
 
-			ctx := context.WithValue(
+			ctx := logging.WithRequestID(
 				r.Context(),
-				requestIDKey{},
 				requestID,
 			)
 
@@ -54,9 +52,9 @@ func RequestLogging(
 
 			next.ServeHTTP(recorder, r)
 
-			logger.Info(
+			logger.InfoContext(
+				ctx,
 				"http request completed",
-				slog.String("request_id", requestID),
 				slog.String("method", r.Method),
 				slog.String("path", r.URL.Path),
 				slog.Int("status", recorder.status),
@@ -70,11 +68,7 @@ func RequestLogging(
 }
 
 func GetRequestID(r *http.Request) string {
-	if requestID, ok := r.Context().Value(requestIDKey{}).(string); ok {
-		return requestID
-	}
-
-	return ""
+	return logging.RequestIDFromContext(r.Context())
 }
 
 func generateRequestID() string {
@@ -85,15 +79,4 @@ func generateRequestID() string {
 	}
 
 	return hex.EncodeToString(bytes)
-}
-
-func WithRequestID(
-	ctx context.Context,
-	requestID string,
-) context.Context {
-	return context.WithValue(
-		ctx,
-		requestIDKey{},
-		requestID,
-	)
 }

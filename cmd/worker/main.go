@@ -12,7 +12,7 @@ import (
 	"time"
 
 	"leadflow/internal/domain"
-	"leadflow/internal/middleware"
+	log "leadflow/internal/logger"
 	"leadflow/internal/platform/bitrix24"
 	"leadflow/internal/platform/database"
 	"leadflow/internal/platform/queue"
@@ -146,7 +146,7 @@ func main() {
 	var bx *bitrix24.Client
 	if cfg.Bitrix24WebhookURL != "" {
 		bx = bitrix24.NewClient(cfg.Bitrix24WebhookURL)
-		logger.Info("bitrix24 client initialized", "webhook_url", cfg.Bitrix24WebhookURL)
+		logger.Info("bitrix24 client initialized")
 	} else {
 		logger.Warn("bitrix24 not configured, leads will not be sent to CRM")
 	}
@@ -239,7 +239,7 @@ func main() {
 				if err := processor.processLeadCreated(ctx, m, ev); err != nil {
 					logger.Error(
 						"failed to process event",
-						"error", err,
+						"error", "telegram request failed",
 						"msg_id", m.ID,
 					)
 
@@ -388,7 +388,7 @@ func (p *leadProcessor) processLeadCreated(
 		attribute.String("redis.message_id", m.ID),
 	)
 
-	ctx = middleware.WithRequestID(ctx, ev.RequestID)
+	ctx = log.WithRequestID(ctx, ev.RequestID)
 
 	p.logger.InfoContext(
 		ctx,
