@@ -2,14 +2,79 @@ package queue
 
 import (
 	"context"
-	"encoding/json"
-	"fmt"
+	"errors"
+	"strings"
 	"time"
 
 	"github.com/redis/go-redis/v9"
+
+	"encoding/json"
+	"fmt"
+
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/propagation"
 )
+
+const (
+	leadConsumerGroup = "leadflow-workers"
+	leadConsumerName  = "worker-1"
+)
+
+func (q *RedisQueue) EnsureLeadGroup(ctx context.Context) error {
+	err := q.client.XGroupCreateMkStream(
+		ctx,
+		q.stream,
+		leadConsumerGroup,
+		"0",
+	).Err()
+
+	if err != nil && !strings.Contains(err.Error(), "BUSYGROUP") {
+		return err
+	}
+
+	return nil
+}
+
+func (q *RedisQueue) ReadLeadCreatedGroup(
+	ctx context.Context,
+	count int64,
+) ([]redis.XMessage, error) {
+	result, err := q.client.XReadGroup(ctx, &redis.XReadGroupArgs{
+		Group:    leadConsumerGroup,
+		Consumer: leadConsumerName,
+		Streams:  []string{q.stream, ">"},
+		Count:    count,
+		Block:    5 * time.Second,
+	}).Result()
+
+	if err != nil {
+		if errors.Is(err, redis.Nil) {
+			return nil, nil
+		}
+
+		return nil, err
+	}
+
+	var msgs []redis.XMessage
+
+	for _, stream := range result {
+		msgs = append(msgs, stream.Messages...)
+	}
+
+	return msgs, nil
+}
+
+func (q *RedisQueue) AckLeadCreated(
+	ctx context.Context,
+	msgID string,
+) error {
+	return q.client.XAck(
+		ctx,
+		q.stream,
+		leadConsumerGroup,
+		msgID,
+	).Err()
+}
 
 const readBlockTimeout = 100 * time.Millisecond
 
