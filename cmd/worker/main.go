@@ -11,6 +11,7 @@ import (
 	"syscall"
 	"time"
 
+	conf "leadflow/internal/config"
 	"leadflow/internal/domain"
 	log "leadflow/internal/logger"
 	"leadflow/internal/platform/bitrix24"
@@ -53,25 +54,24 @@ type config struct {
 
 func loadConfig() config {
 	return config{
-		RedisAddr: getEnv("REDIS_ADDR", "localhost:6379"),
-
-		TelegramBotToken: getEnv("TELEGRAM_BOT_TOKEN", ""),
-		TelegramChatID:   getEnvInt64("TELEGRAM_CHAT_ID", 0),
+		RedisAddr:        getEnv("REDIS_ADDR", "localhost:6379"),
+		TelegramBotToken: conf.GetSecret("telegram_token", ""),
+		TelegramChatID:   conf.GetSecretInt64("telegram_chat_id", 0),
 
 		OTLPEndpoint: getEnv("OTEL_EXPORTER_OTLP_ENDPOINT", ""),
 
 		DBHost:     getEnv("DB_HOST", "localhost"),
 		DBPort:     getEnv("DB_PORT", "5432"),
 		DBUser:     getEnv("DB_USER", "leadflow"),
-		DBPassword: getEnv("DB_PASSWORD", "leadflow"),
+		DBPassword: conf.GetSecret("db_password", ""),
 		DBName:     getEnv("DB_NAME", "leadflow"),
 		DBSSLMode:  getEnv("DB_SSLMODE", "disable"),
 
 		LogLevel:  getEnv("LOG_LEVEL", "info"),
 		LogFormat: getEnv("LOG_FORMAT", "json"),
 
-		Bitrix24WebhookURL: getEnv("BITRIX24_WEBHOOK_URL", ""),
-		GRPCInternalToken:  getEnv("GRPC_INTERNAL_TOKEN", ""),
+		Bitrix24WebhookURL: conf.GetSecret("bitrix24_url", ""),
+		GRPCInternalToken:  getEnv("grpc_internal_token", ""),
 	}
 }
 
