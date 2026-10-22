@@ -18,12 +18,8 @@ The application setup instructions depend on the project's stack and are not yet
 
 ### For fast local start
 ```
-cd ~/DEV/LeadFlow/deploy/prod
+cd ~/DEV/LeadFlow/deploy_local
 sudo docker compose --profile app --profile observability up --build
-sudo docker compose --profile app exec -T postgres \
-  psql -U leadflow -d leadflow \
-  -v ON_ERROR_STOP=1 \
-  < seed/seed.sql
 ```
 
 ## Development
