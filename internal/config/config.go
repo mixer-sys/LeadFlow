@@ -1,6 +1,9 @@
 package config
 
-import "os"
+import (
+	"os"
+	"strings"
+)
 
 type config struct {
 	HTTPAddr string
@@ -21,32 +24,68 @@ type config struct {
 	GRPCInternalToken string
 
 	OTLPEndpoint string
+
+	TelegramBotToken string
+	TelegramChatID   string
+
+	Bitrix24WebhookURL string
 }
 
 func New() config {
 	return config{
-		HTTPAddr: getEnv("HTTP_ADDR", ":8080"),
+		HTTPAddr: getValueOrSecret("HTTP_ADDR", "http_addr", ":8080"),
 
-		DBHost:     getEnv("DB_HOST", "localhost"),
-		DBPort:     getEnv("DB_PORT", "5432"),
-		DBUser:     getEnv("DB_USER", "leadflow"),
-		DBPassword: getEnv("DB_PASSWORD", "leadflow"),
-		DBName:     getEnv("DB_NAME", "leadflow"),
-		DBSSLMode:  getEnv("DB_SSLMODE", "disable"),
+		DBHost:     getValueOrSecret("DB_HOST", "db_host", "localhost"),
+		DBPort:     getValueOrSecret("DB_PORT", "db_port", "5432"),
+		DBUser:     getValueOrSecret("DB_USER", "db_user", "leadflow"),
+		DBPassword: getValueOrSecret("DB_PASSWORD", "db_password", ""),
+		DBName:     getValueOrSecret("DB_NAME", "db_name", "leadflow"),
+		DBSSLMode:  getValueOrSecret("DB_SSLMODE", "db_sslmode", "disable"),
 
-		RedisAddr: getEnv("REDIS_ADDR", "localhost:6379"),
+		RedisAddr: getValueOrSecret("REDIS_ADDR", "redis_addr", "localhost:6379"),
 
-		APIKey:    getEnv("API_KEY", ""),
-		LogLevel:  getEnv("LOG_LEVEL", "info"),
-		LogFormat: getEnv("LOG_FORMAT", "json"),
+		APIKey:    getValueOrSecret("API_KEY", "api_key", ""),
+		LogLevel:  getValueOrSecret("LOG_LEVEL", "log_level", "info"),
+		LogFormat: getValueOrSecret("LOG_FORMAT", "log_format", "json"),
 
-		GRPCInternalToken: getEnv("GRPC_INTERNAL_TOKEN", ""),
-		OTLPEndpoint:      getEnv("OTEL_EXPORTER_OTLP_ENDPOINT", ""),
+		GRPCInternalToken: getValueOrSecret("GRPC_INTERNAL_TOKEN", "grpc_internal_token", ""),
+		OTLPEndpoint:      getValueOrSecret("OTEL_EXPORTER_OTLP_ENDPOINT", "otel_exporter_otlp_endpoint", ""),
+
+		TelegramBotToken: getValueOrSecret("TELETELEGRAM_BOT_TOKEN", "telegram_bot_token", ""),
+		TelegramChatID:   getValueOrSecret("TELEGRAM_CHAT_ID", "telegram_chat_id", ""),
+
+		Bitrix24WebhookURL: getValueOrSecret("BITRIX24_WEBHOOK_URL", "bitrix24_webhook_url", ""),
 	}
 }
 
 func getEnv(key, defaultVal string) string {
 	if v := os.Getenv(key); v != "" {
+		return v
+	}
+
+	return defaultVal
+}
+
+func getSecret(key, defaultVal string) string {
+	path := "/run/secrets/" + key
+
+	data, err := os.ReadFile(path)
+	if err == nil {
+		value := strings.TrimSpace(string(data))
+
+		if value != "" {
+			return value
+		}
+	}
+
+	return getEnv(key, defaultVal)
+}
+
+func getValueOrSecret(envKey, secretName, defaultVal string) string {
+	if v := os.Getenv(envKey); v != "" {
+		return v
+	}
+	if v := getSecret(secretName, ""); v != "" {
 		return v
 	}
 

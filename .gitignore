@@ -13,3 +13,4 @@ deploy/prometheus/.env
 
 # IDE
 .vscode/
+deploy/prod/.env
