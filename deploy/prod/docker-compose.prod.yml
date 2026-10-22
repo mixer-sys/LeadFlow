@@ -7,13 +7,17 @@ services:
       - "80:80"
     volumes:
       - ./nginx/leadflow.conf:/etc/nginx/conf.d/default.conf:ro
-      - certbot_www:/var/www/certbot
     depends_on:
       - api
+    profiles:
+      - app
 
   api:
-    image: ghcr.io/${GHCR_OWNER}/leadflow-api:${IMAGE_TAG:-latest}
-    pull_policy: always
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    image: leadflow-api:local
+    pull_policy: build
     container_name: leadflow-api
     restart: unless-stopped
     command: ["/bin/leadflow-api"]
@@ -22,16 +26,13 @@ services:
       DB_HOST: postgres
       DB_PORT: "5432"
       DB_USER: leadflow
+      DB_PASSWORD: leadflow
       DB_NAME: leadflow
-      DB_SSLMODE: require
+      DB_SSLMODE: disable
       REDIS_ADDR: redis:6379
       LOG_LEVEL: info
       LOG_FORMAT: json
       OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4317
-    secrets:
-      - db_password
-      - api_key
-      - grpc_internal_token
     depends_on:
       postgres:
         condition: service_healthy
@@ -43,10 +44,15 @@ services:
       timeout: 3s
       retries: 5
       start_period: 10s
+    profiles:
+      - app
 
   worker:
-    image: ghcr.io/${GHCR_OWNER}/leadflow-worker:${IMAGE_TAG:-latest}
-    pull_policy: always
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    image: leadflow-worker:local
+    pull_policy: build
     container_name: leadflow-worker
     restart: unless-stopped
     command: ["/bin/leadflow-worker"]
@@ -55,22 +61,23 @@ services:
       DB_HOST: postgres
       DB_PORT: "5432"
       DB_USER: leadflow
+      DB_PASSWORD: leadflow
       DB_NAME: leadflow
-      DB_SSLMODE: require
+      DB_SSLMODE: disable
       LOG_LEVEL: info
       LOG_FORMAT: json
       OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4317
-    secrets:
-      - db_password
-      - telegram_token
-      - telegram_chat_id
-      - bitrix24_url
-      - grpc_internal_token
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID:-0}
+      BITRIX24_WEBHOOK_URL: ${BITRIX24_WEBHOOK_URL:-}
+      GRPC_INTERNAL_TOKEN: ${GRPC_INTERNAL_TOKEN:-}
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
+    profiles:
+      - app
 
   postgres:
     image: postgres:17-alpine
@@ -78,10 +85,8 @@ services:
     restart: unless-stopped
     environment:
       POSTGRES_USER: leadflow
-      POSTGRES_PASSWORD_FILE: /run/secrets/db_password
+      POSTGRES_PASSWORD: leadflow
       POSTGRES_DB: leadflow
-    secrets:
-      - db_password
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -89,6 +94,9 @@ services:
       interval: 10s
       timeout: 5s
       retries: 10
+      start_period: 10s
+    profiles:
+      - app
 
   redis:
     image: redis:7-alpine
@@ -109,22 +117,59 @@ services:
       interval: 10s
       timeout: 3s
       retries: 10
+    profiles:
+      - app
+
+  jaeger:
+    image: jaegertracing/all-in-one:1.62.0
+    container_name: leadflow-jaeger
+    ports:
+      - "16686:16686"
+      - "4317:4317"
+      - "4318:4318"
+    profiles:
+      - observability
+
+  loki:
+    image: grafana/loki:3.5.0
+    container_name: leadflow-loki
+    ports:
+      - "3100:3100"
+    volumes:
+      - loki_data:/loki
+    command: -config.file=/etc/loki/local-config.yaml
+    profiles:
+      - observability
+
+  grafana:
+    image: grafana/grafana:11.6.0
+    container_name: leadflow-grafana
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+    volumes:
+      - grafana_data:/var/lib/grafana
+    depends_on:
+      - loki
+    profiles:
+      - observability
+
+  promtail:
+    image: grafana/promtail:3.5.0
+    container_name: leadflow-promtail
+    volumes:
+      - ./observability/promtail.yml:/etc/promtail/config.yml:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    command: -config.file=/etc/promtail/config.yml
+    depends_on:
+      - loki
+    profiles:
+      - observability
 
 volumes:
   postgres_data:
   redis_data:
-  certbot_www:
-
-secrets:
-  db_password:
-    file: /opt/leadflow/secrets/db_password
-  api_key:
-    file: /opt/leadflow/secrets/api_key
-  grpc_internal_token:
-    file: /opt/leadflow/secrets/grpc_internal_token
-  telegram_token:
-    file: /opt/leadflow/secrets/telegram_token
-  telegram_chat_id:
-    file: /opt/leadflow/secrets/telegram_chat_id
-  bitrix24_url:
-    file: /opt/leadflow/secrets/bitrix24_url
+  loki_data:
+  grafana_data:

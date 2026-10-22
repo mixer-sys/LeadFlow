@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
-	"strconv"
 	"time"
 )
 
@@ -27,14 +26,14 @@ func NewClient(token string) *Client {
 }
 
 type SendMessageParams struct {
-	ChatID    int64
+	ChatID    string
 	Text      string
 	ParseMode string
 }
 
-func (c *Client) SendMessage(ctx context.Context, params SendMessageParams) (int64, error) {
+func (c *Client) SendMessage(ctx context.Context, params SendMessageParams) (string, error) {
 	v := url.Values{}
-	v.Set("chat_id", strconv.FormatInt(params.ChatID, 10))
+	v.Set("chat_id", params.ChatID)
 	v.Set("text", params.Text)
 	if params.ParseMode != "" {
 		v.Set("parse_mode", params.ParseMode)
@@ -44,12 +43,12 @@ func (c *Client) SendMessage(ctx context.Context, params SendMessageParams) (int
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u, nil)
 	if err != nil {
-		return 0, fmt.Errorf("create request: %w", err)
+		return "", fmt.Errorf("create request: %w", err)
 	}
 
 	resp, err := c.httpCli.Do(req)
 	if err != nil {
-		return 0, fmt.Errorf("do request: %w", err)
+		return "0", fmt.Errorf("do request: %w", err)
 	}
 	defer resp.Body.Close()
 
@@ -57,16 +56,16 @@ func (c *Client) SendMessage(ctx context.Context, params SendMessageParams) (int
 		OK          bool   `json:"ok"`
 		Description string `json:"description"`
 		Result      struct {
-			MessageID int64 `json:"message_id"`
+			MessageID string `json:"message_id"`
 		} `json:"result"`
 	}
 
 	if err := json.NewDecoder(resp.Body).Decode(&tgResp); err != nil {
-		return 0, fmt.Errorf("decode response: %w", err)
+		return "", fmt.Errorf("decode response: %w", err)
 	}
 
 	if !tgResp.OK {
-		return 0, fmt.Errorf("telegram error: %s", tgResp.Description)
+		return "", fmt.Errorf("telegram error: %s", tgResp.Description)
 	}
 
 	return tgResp.Result.MessageID, nil

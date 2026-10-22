@@ -11,7 +11,7 @@ import (
 	"syscall"
 	"time"
 
-	conf "leadflow/internal/config"
+	"leadflow/internal/config"
 	"leadflow/internal/domain"
 	log "leadflow/internal/logger"
 	"leadflow/internal/platform/bitrix24"
@@ -30,77 +30,8 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
-type config struct {
-	RedisAddr string
-
-	TelegramBotToken string
-	TelegramChatID   int64
-
-	OTLPEndpoint string
-
-	DBHost     string
-	DBPort     string
-	DBUser     string
-	DBPassword string
-	DBName     string
-	DBSSLMode  string
-
-	LogLevel  string
-	LogFormat string
-
-	Bitrix24WebhookURL string
-	GRPCInternalToken  string
-}
-
-func loadConfig() config {
-	return config{
-		RedisAddr:        getEnv("REDIS_ADDR", "localhost:6379"),
-		TelegramBotToken: conf.GetSecret("telegram_token", ""),
-		TelegramChatID:   conf.GetSecretInt64("telegram_chat_id", 0),
-
-		OTLPEndpoint: getEnv("OTEL_EXPORTER_OTLP_ENDPOINT", ""),
-
-		DBHost:     getEnv("DB_HOST", "localhost"),
-		DBPort:     getEnv("DB_PORT", "5432"),
-		DBUser:     getEnv("DB_USER", "leadflow"),
-		DBPassword: conf.GetSecret("db_password", ""),
-		DBName:     getEnv("DB_NAME", "leadflow"),
-		DBSSLMode:  getEnv("DB_SSLMODE", "disable"),
-
-		LogLevel:  getEnv("LOG_LEVEL", "info"),
-		LogFormat: getEnv("LOG_FORMAT", "json"),
-
-		Bitrix24WebhookURL: conf.GetSecret("bitrix24_url", ""),
-		GRPCInternalToken:  getEnv("grpc_internal_token", ""),
-	}
-}
-
-func getEnv(key, defaultVal string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
-	}
-
-	return defaultVal
-}
-
-func getEnvInt64(key string, defaultVal int64) int64 {
-	v := os.Getenv(key)
-
-	if v == "" {
-		return defaultVal
-	}
-
-	var val int64
-
-	if _, err := fmt.Sscanf(v, "%d", &val); err != nil {
-		return defaultVal
-	}
-
-	return val
-}
-
 func main() {
-	cfg := loadConfig()
+	cfg := config.New()
 
 	logger := log.New(log.Config{
 		Level:  cfg.LogLevel,
@@ -155,7 +86,7 @@ func main() {
 
 	var tg *telegram.Client
 
-	if cfg.TelegramBotToken != "" && cfg.TelegramChatID != 0 {
+	if cfg.TelegramBotToken != "" && cfg.TelegramChatID != "" {
 		tg = telegram.NewClient(cfg.TelegramBotToken)
 
 		logger.Info("telegram client initialized", "chat_id", cfg.TelegramChatID)
@@ -400,7 +331,7 @@ type leadProcessor struct {
 	webhookSvc   *service.WebhookService
 	tg           *telegram.Client
 	bx           *bitrix24.Client
-	telegramChat int64
+	telegramChat string
 }
 
 func (p *leadProcessor) processLeadCreated(
@@ -653,7 +584,7 @@ func (p *leadProcessor) processLeadCreated(
 	}
 
 	telegramSpan.SetAttributes(
-		attribute.Int64("telegram.message_id", msgID),
+		attribute.String("telegram.message_id", msgID),
 	)
 	telegramSpan.SetStatus(codes.Ok, "message sent")
 	telegramSpan.End()
