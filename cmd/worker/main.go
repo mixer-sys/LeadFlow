@@ -480,6 +480,7 @@ func (p *leadProcessor) processLeadCreated(
 
 	ctx, webhookSpan := p.tracer.Start(ctx, "webhook.send")
 
+	//
 	if err := p.webhookSvc.SendWebhooks(ctx, lead, ev.RequestID); err != nil {
 		webhookSpan.RecordError(err)
 		webhookSpan.SetStatus(codes.Error, "failed to send webhooks")
@@ -503,6 +504,31 @@ func (p *leadProcessor) processLeadCreated(
 		"webhooks sent",
 		"lead_id", lead.ID,
 	)
+	//
+
+	webhookErr := p.webhookSvc.SendWebhooks(ctx, lead, ev.RequestID)
+
+	if webhookErr != nil {
+		webhookSpan.RecordError(webhookErr)
+		webhookSpan.SetStatus(codes.Error, "failed to send webhooks")
+
+		p.logger.ErrorContext(
+			ctx,
+			"webhooks failed, continuing to telegram",
+			"error", webhookErr,
+			"lead_id", lead.ID,
+		)
+	} else {
+		webhookSpan.SetStatus(codes.Ok, "webhooks sent")
+
+		p.logger.InfoContext(
+			ctx,
+			"webhookds sent",
+			"lead_id", lead.ID,
+		)
+	}
+
+	webhookSpan.End()
 
 	if p.tg == nil {
 		p.logger.WarnContext(
@@ -584,7 +610,7 @@ func (p *leadProcessor) processLeadCreated(
 	}
 
 	telegramSpan.SetAttributes(
-		attribute.String("telegram.message_id", msgID),
+		attribute.Int64("telegram.message_id", msgID),
 	)
 	telegramSpan.SetStatus(codes.Ok, "message sent")
 	telegramSpan.End()

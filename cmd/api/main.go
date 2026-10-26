@@ -155,9 +155,24 @@ func main() {
 		"POST /api/v1/leads",
 		apiKeyAuth(http.HandlerFunc(leadHandler.Create)).ServeHTTP,
 	)
-
 	mux.Handle("GET /api/v1/leads", apiKeyAuth(leadListHandler))
 	mux.Handle("GET /admin/leads", apiKeyAuth(adminLeadsHandler))
+	mux.Handle(
+		"GET /api/v1/leads/{id}",
+		apiKeyAuth(http.HandlerFunc(leadHandler.GetByID)),
+	)
+	mux.Handle(
+		"DELETE /api/v1/leads/{id}",
+		apiKeyAuth(http.HandlerFunc(leadHandler.Delete)),
+	)
+	mux.Handle(
+		"PUT /api/v1/leads/{id}",
+		apiKeyAuth(http.HandlerFunc(leadHandler.Put)),
+	)
+	mux.Handle(
+		"PATCH /api/v1/leads/{id}",
+		apiKeyAuth(http.HandlerFunc(leadHandler.UpdateStatus)),
+	)
 
 	mux.HandleFunc("POST /api/v1/organizations", orgHandler.Create)
 

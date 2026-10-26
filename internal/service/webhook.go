@@ -574,7 +574,12 @@ func (s *WebhookService) RetryDelivery(
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		metrics.ObserveDelivery("error", duration)
 
-		err := fmt.Errorf("unexpected status: %s", resp.Status)
+		err := fmt.Errorf(
+			"unexpected status: %s (method=%s, allow=%q)",
+			resp.Status,
+			resp.Request.Method,
+			resp.Header.Get("Allow"),
+		)
 
 		if handleErr := s.handleWebhookFailure(
 			ctx,

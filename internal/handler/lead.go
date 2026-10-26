@@ -3,8 +3,10 @@ package handler
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http"
+	"net/mail"
 	"strconv"
 
 	"leadflow/internal/auth"
@@ -19,6 +21,28 @@ type LeadCreator interface {
 		ctx context.Context,
 		input service.CreateLeadInput,
 		requestID string,
+	) (*domain.Lead, error)
+
+	GetByID(
+		ctx context.Context,
+		id int64,
+	) (*domain.Lead, error)
+
+	UpdateLead(
+		ctx context.Context,
+		input service.UpdateLeadInput,
+	) (*domain.Lead, error)
+
+	DeleteLead(
+		ctx context.Context,
+		id int64,
+		organizationID int64,
+	) error
+	UpdateStatus(
+		ctx context.Context,
+		id int64,
+		organizationID int64,
+		status domain.LeadStatus,
 	) (*domain.Lead, error)
 }
 
@@ -47,8 +71,77 @@ type createLeadRequest struct {
 	Message *string `json:"message"`
 }
 
+type updateStatusRequest struct {
+	Status string `json:"status"`
+}
+
 type createLeadResponse struct {
 	ID int64 `json:"id"`
+}
+
+func (h *LeadHandler) UpdateStatus(
+	w http.ResponseWriter,
+	r *http.Request,
+) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil || id <= 0 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{
+			"error": "invalid lead id",
+		})
+		return
+	}
+
+	organizationID, ok := auth.GetOrganizationIDFromContext(r)
+	if !ok {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{
+			"error": "organization not found",
+		})
+		return
+	}
+
+	var req updateStatusRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{
+			"error": "invalid request body",
+		})
+		return
+	}
+
+	if req.Status == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{
+			"error": "status is required",
+		})
+		return
+	}
+
+	status := domain.LeadStatus(req.Status)
+	if !status.IsValid() {
+		writeJSON(w, http.StatusBadRequest, map[string]string{
+			"error": "invalid status",
+		})
+		return
+	}
+
+	lead, err := h.svc.UpdateStatus(
+		r.Context(),
+		id,
+		organizationID,
+		status,
+	)
+	if err != nil {
+		if errors.Is(err, domain.ErrLeadNotFound) {
+			writeJSON(w, http.StatusNotFound, map[string]string{
+				"error": "lead not found",
+			})
+			return
+		}
+
+		writeJSON(w, http.StatusInternalServerError, map[string]string{
+			"error": "update lead status failed",
+		})
+		return
+	}
+	writeJSON(w, http.StatusOK, lead)
 }
 
 func (h *LeadHandler) Create(w http.ResponseWriter, r *http.Request) {
@@ -72,6 +165,22 @@ func (h *LeadHandler) Create(w http.ResponseWriter, r *http.Request) {
 		)
 
 		return
+	}
+
+	if req.Email == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{
+			"error": "email is required",
+		})
+		return
+	}
+
+	if req.Email != "" {
+		if _, err := mail.ParseAddress(req.Email); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{
+				"error": "invalid email",
+			})
+			return
+		}
 	}
 
 	organizationID, ok := auth.GetOrganizationIDFromContext(r)
@@ -144,6 +253,104 @@ func (h *LeadHandler) Create(w http.ResponseWriter, r *http.Request) {
 			slog.String("error", err.Error()),
 		)
 	}
+}
+
+func (h *LeadHandler) Put(
+	w http.ResponseWriter,
+	r *http.Request,
+) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil || id <= 0 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{
+			"error": "invalid lead id",
+		})
+		return
+	}
+
+	organizationID, ok := auth.GetOrganizationIDFromContext(r)
+	if !ok {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{
+			"error": "organization not found",
+		})
+		return
+	}
+
+	var req struct {
+		Name    *string `json:"name"`
+		Email   *string `json:"email"`
+		Phone   *string `json:"phone"`
+		Message *string `json:"message"`
+		Source  *string `json:"source"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{
+			"error": "invalid JSON body",
+		})
+		return
+	}
+
+	lead, err := h.svc.UpdateLead(r.Context(), service.UpdateLeadInput{
+		ID:             id,
+		Name:           req.Name,
+		Email:          req.Email,
+		Phone:          req.Phone,
+		Message:        req.Message,
+		Source:         req.Source,
+		OrganizationID: organizationID,
+	})
+
+	if err != nil {
+		switch {
+		case errors.Is(err, domain.ErrLeadNotFound):
+			writeJSON(w, http.StatusNotFound, map[string]string{
+				"error": "lead not found",
+			})
+		case errors.Is(err, domain.ErrInvalidEmail):
+			writeJSON(w, http.StatusBadRequest, map[string]string{
+				"error": "invalid email",
+			})
+
+		default:
+			writeJSON(w, http.StatusInternalServerError, map[string]string{
+				"error": "update lead failed",
+			})
+		}
+
+		return
+	}
+
+	writeJSON(w, http.StatusOK, lead)
+}
+
+func (h *LeadHandler) GetByID(
+	w http.ResponseWriter,
+	r *http.Request,
+) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil || id <= 0 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{
+			"error": "invalid lead id",
+		})
+		return
+	}
+
+	lead, err := h.svc.GetByID(r.Context(), id)
+	if err != nil {
+		if errors.Is(err, domain.ErrLeadNotFound) {
+			writeJSON(w, http.StatusNotFound, map[string]string{
+				"error": "lead not found",
+			})
+			return
+		}
+
+		writeJSON(w, http.StatusInternalServerError, map[string]string{
+			"error": "get lead failed",
+		})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, lead)
 }
 
 type LeadListHandler struct {
@@ -247,4 +454,58 @@ func (h *LeadListHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 
 	_ = json.NewEncoder(w).Encode(resp)
+}
+
+func writeJSON(
+	w http.ResponseWriter,
+	status int,
+	data any,
+) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+
+	if err := json.NewEncoder(w).Encode(data); err != nil {
+		http.Error(
+			w,
+			`{"error":"failed to encode response"}`,
+			http.StatusInternalServerError,
+		)
+	}
+}
+
+func (h *LeadHandler) Delete(
+	w http.ResponseWriter,
+	r *http.Request,
+) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil || id <= 0 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{
+			"error": "invalid lead id",
+		})
+		return
+	}
+
+	organizationID, ok := auth.GetOrganizationIDFromContext(r)
+	if !ok {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{
+			"error": "organization not found",
+		})
+		return
+	}
+
+	if err := h.svc.DeleteLead(r.Context(), id, organizationID); err != nil {
+		if errors.Is(err, domain.ErrLeadNotFound) {
+			writeJSON(w, http.StatusNotFound, map[string]string{
+				"error": "lead not found",
+			})
+			return
+		}
+
+		writeJSON(w, http.StatusInternalServerError, map[string]string{
+			"error": "delete lead failed",
+		})
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
 }

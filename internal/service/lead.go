@@ -2,11 +2,15 @@ package service
 
 import (
 	"context"
+	"errors"
 	"log/slog"
+	"net/mail"
 
 	"leadflow/internal/domain"
 	"leadflow/internal/platform/queue"
 	"leadflow/internal/repository"
+
+	"github.com/jackc/pgx/v5"
 )
 
 type LeadService struct {
@@ -151,10 +155,42 @@ func (s *LeadService) CreateLead(
 	return lead, nil
 }
 
+func (s *LeadService) GetByID(
+	ctx context.Context,
+	id int64,
+) (*domain.Lead, error) {
+	if id <= 0 {
+		return nil, domain.ErrLeadNotFound
+	}
+
+	lead, err := s.repo.GetByID(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+
+	if lead == nil {
+		return nil, domain.ErrLeadNotFound
+	}
+
+	return lead, nil
+
+}
+
 func (s *LeadService) UpdateLead(
 	ctx context.Context,
 	input UpdateLeadInput,
 ) (*domain.Lead, error) {
+
+	if input.ID <= 0 {
+		return nil, domain.ErrLeadNotFound
+	}
+
+	if input.Email != nil && *input.Email != "" {
+		if _, err := mail.ParseAddress(*input.Email); err != nil {
+			return nil, domain.ErrInvalidEmail
+		}
+	}
+
 	params := repository.UpdateLeadParams{
 		ID:             input.ID,
 		Name:           input.Name,
@@ -165,5 +201,39 @@ func (s *LeadService) UpdateLead(
 		OrganizationID: input.OrganizationID,
 	}
 
-	return s.repo.Update(ctx, params)
+	lead, err := s.repo.Update(ctx, params)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, domain.ErrLeadNotFound
+		}
+
+		return nil, err
+	}
+
+	return lead, nil
+}
+
+func (s *LeadService) DeleteLead(
+	ctx context.Context,
+	id int64,
+	organizationID int64,
+) error {
+	if id <= 0 {
+		return domain.ErrLeadNotFound
+	}
+
+	return s.repo.Delete(ctx, id, organizationID)
+}
+
+func (s *LeadService) UpdateStatus(
+	ctx context.Context,
+	id int64,
+	organizationID int64,
+	status domain.LeadStatus,
+) (*domain.Lead, error) {
+	if id <= 0 {
+		return nil, domain.ErrLeadNotFound
+	}
+
+	return s.repo.UpdateStatus(ctx, id, organizationID, status)
 }

@@ -31,7 +31,7 @@ type SendMessageParams struct {
 	ParseMode string
 }
 
-func (c *Client) SendMessage(ctx context.Context, params SendMessageParams) (string, error) {
+func (c *Client) SendMessage(ctx context.Context, params SendMessageParams) (int64, error) {
 	v := url.Values{}
 	v.Set("chat_id", params.ChatID)
 	v.Set("text", params.Text)
@@ -43,12 +43,12 @@ func (c *Client) SendMessage(ctx context.Context, params SendMessageParams) (str
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u, nil)
 	if err != nil {
-		return "", fmt.Errorf("create request: %w", err)
+		return 0, fmt.Errorf("create request: %w", err)
 	}
 
 	resp, err := c.httpCli.Do(req)
 	if err != nil {
-		return "0", fmt.Errorf("do request: %w", err)
+		return 0, fmt.Errorf("do request: %w", err)
 	}
 	defer resp.Body.Close()
 
@@ -56,16 +56,16 @@ func (c *Client) SendMessage(ctx context.Context, params SendMessageParams) (str
 		OK          bool   `json:"ok"`
 		Description string `json:"description"`
 		Result      struct {
-			MessageID string `json:"message_id"`
+			MessageID int64 `json:"message_id"`
 		} `json:"result"`
 	}
 
 	if err := json.NewDecoder(resp.Body).Decode(&tgResp); err != nil {
-		return "", fmt.Errorf("decode response: %w", err)
+		return 0, fmt.Errorf("decode response: %w", err)
 	}
 
 	if !tgResp.OK {
-		return "", fmt.Errorf("telegram error: %s", tgResp.Description)
+		return 0, fmt.Errorf("telegram error: %s", tgResp.Description)
 	}
 
 	return tgResp.Result.MessageID, nil

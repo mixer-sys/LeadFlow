@@ -226,7 +226,7 @@ if [[ -n "$LEAD_ID" ]]; then
 
   check "11. Update lead status" \
     "200 204" PATCH "$LEADS_URL/$LEAD_ID" valid \
-    --data '{"status":"in_progress"}'
+    --data '{"status":"processed"}'
 
   check "12. Delete lead" \
     "200 204" DELETE "$LEADS_URL/$LEAD_ID" valid

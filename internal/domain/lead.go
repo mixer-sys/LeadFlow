@@ -1,6 +1,8 @@
 package domain
 
-import "time"
+import (
+	"time"
+)
 
 type LeadStatus string
 
@@ -35,4 +37,13 @@ type CreateLeadParams struct {
 	Phone          *string
 	Message        *string
 	OrganizationID int64
+}
+
+func (s LeadStatus) IsValid() bool {
+	switch s {
+	case LeadStatusFailed, LeadStatusNew, LeadStatusProcessed:
+		return true
+	default:
+		return false
+	}
 }

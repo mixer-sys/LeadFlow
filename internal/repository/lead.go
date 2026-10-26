@@ -525,3 +525,99 @@ func (r *LeadRepo) List(
 
 	return leads, nil
 }
+
+func (r *LeadRepo) Delete(
+	ctx context.Context,
+	id int64,
+	organizationID int64,
+) error {
+	commandTag, err := r.pool.Exec(
+		ctx,
+		`
+		DELETE FROM leads
+		WHERE id = $1 AND organization_id = $2
+		`,
+		id,
+		organizationID,
+	)
+	if err != nil {
+		return err
+	}
+
+	if commandTag.RowsAffected() == 0 {
+		return domain.ErrLeadNotFound
+	}
+
+	return nil
+}
+
+func (r *LeadRepo) UpdateStatus(
+	ctx context.Context,
+	id int64,
+	organizationID int64,
+	status domain.LeadStatus,
+) (*domain.Lead, error) {
+	rows, err := r.pool.Query(
+		ctx,
+		`UPDATE leads
+		SET status = $3, updated_at = NOW()
+		WHERE id = $1 AND organization_id = $2
+		RETURNING
+			id,
+            created_at,
+            updated_at,
+            source,
+            name,
+            email,
+            phone,
+            message,
+            status,
+            processed_at,
+            telegram_message_id,
+            telegram_sent_at,
+            telegram_retry_count,
+            organization_id,
+            bitrix_id
+		`,
+		id,
+		organizationID,
+		status,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	if !rows.Next() {
+		if err := rows.Err(); err != nil {
+			return nil, err
+		}
+
+		return nil, domain.ErrLeadNotFound
+	}
+
+	var lead domain.Lead
+
+	err = rows.Scan(
+		&lead.ID,
+		&lead.CreatedAt,
+		&lead.UpdatedAt,
+		&lead.Source,
+		&lead.Name,
+		&lead.Email,
+		&lead.Phone,
+		&lead.Message,
+		&lead.Status,
+		&lead.ProcessedAt,
+		&lead.TelegramMessageID,
+		&lead.TelegramSentAt,
+		&lead.TelegramRetryCount,
+		&lead.OrganizationID,
+		&lead.BitrixID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("scan lead: %w", err)
+	}
+
+	return &lead, nil
+}
