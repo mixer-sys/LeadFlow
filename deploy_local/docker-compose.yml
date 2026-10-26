@@ -11,7 +11,7 @@ services:
       api:
         condition: service_healthy
     profiles:
-      - app
+      - disabled
 
   api:
     build:
@@ -57,7 +57,7 @@ services:
       retries: 5
       start_period: 10s
     profiles:
-      - app
+      - disabled
 
   worker:
     build:
@@ -97,12 +97,14 @@ services:
       redis:
         condition: service_healthy
     profiles:
-      - app
+      - disabled
 
   postgres:
     image: postgres:17-alpine
     container_name: leadflow-postgres
     restart: unless-stopped
+    ports:
+      - "127.0.0.1:5432:5432"
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-leadflow}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
@@ -122,6 +124,8 @@ services:
     image: redis:7-alpine
     container_name: leadflow-redis
     restart: unless-stopped
+    ports:
+      - "127.0.0.1:6379:6379"
     command:
       - redis-server
       - --appendonly
@@ -144,11 +148,14 @@ services:
     image: jaegertracing/all-in-one:1.62.0
     container_name: leadflow-jaeger
     restart: unless-stopped
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+      COLLECTOR_OTLP_GRPC_HOST_PORT: "0.0.0.0:4317"
     ports:
-      - "${JAEGER_UI_PORT:-16686}:16686"
+      - "127.0.0.1:${JAEGER_UI_PORT:-16686}:16686"
+      - "127.0.0.1:4317:4317"
     profiles:
       - observability
-
   loki:
     image: grafana/loki:3.5.0
     container_name: leadflow-loki
@@ -190,6 +197,43 @@ services:
     profiles:
       - observability
 
+  
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: leadflow-prometheus
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:9091:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./monitoring/alerts.yml:/etc/prometheus/alerts.yml:ro
+      - prometheus_data:/prometheus
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+    profiles:
+      - observability
+
+  alertmanager:
+    image: prom/alertmanager:latest
+    container_name: leadflow-alertmanager
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:9093:9093"
+    environment:
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:?TELEGRAM_BOT_TOKEN is required}
+      TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID:?TELEGRAM_CHAT_ID is required}
+    volumes:
+      - ./monitoring/alertmanager-entrypoint.sh:/etc/alertmanager/entrypoint.sh:ro
+      - ./monitoring/alertmanager.yml.template:/etc/alertmanager/alertmanager.yml.template:ro
+      - alertmanager_data:/alertmanager
+    entrypoint:
+      - /bin/sh
+      - /etc/alertmanager/entrypoint.sh
+    profiles:
+      - observability
   migrate:
     image: kukymbr/goose-docker:3.27.2
     container_name: leadflow-migrate
@@ -240,6 +284,8 @@ volumes:
   redis_data:
   loki_data:
   grafana_data:
+  prometheus_data:
+  alertmanager_data:
 
 secrets:
   db_password:

@@ -18,10 +18,15 @@ The application setup instructions depend on the project's stack and are not yet
 
 ### For fast local start
 ```
-cd ~/DEV/LeadFlow/deploy_local
-sudo docker compose --profile app --profile observability up --build
+
+
 ```
 
+### For local develop
+```
+
+
+```
 ## Development
 
 When contributing, keep changes focused and include relevant testing details in your pull request.

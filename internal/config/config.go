@@ -51,7 +51,7 @@ func New() config {
 		GRPCInternalToken: getValueOrSecret("GRPC_INTERNAL_TOKEN", "grpc_internal_token", ""),
 		OTLPEndpoint:      getValueOrSecret("OTEL_EXPORTER_OTLP_ENDPOINT", "otel_exporter_otlp_endpoint", ""),
 
-		TelegramBotToken: getValueOrSecret("TELETELEGRAM_BOT_TOKEN", "telegram_bot_token", ""),
+		TelegramBotToken: getValueOrSecret("TELEGRAM_BOT_TOKEN", "telegram_bot_token", ""),
 		TelegramChatID:   getValueOrSecret("TELEGRAM_CHAT_ID", "telegram_chat_id", ""),
 
 		Bitrix24WebhookURL: getValueOrSecret("BITRIX24_WEBHOOK_URL", "bitrix24_webhook_url", ""),

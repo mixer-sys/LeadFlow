@@ -1,273 +1,319 @@
 #!/usr/bin/env bash
-# test.sh — smoke-тесты LeadFlow API.
-# Запуск: ./test.sh
-# Перед запуском убедись, что стек поднят: docker compose --profile app up -d
+# Smoke-тесты LeadFlow API.
+# Запуск: bash test.sh
+# Зависимости: curl, jq.
+#
+# ВНИМАНИЕ:
+# Создаёт лиды и удаляет первый созданный тестовый лид.
+# При работающем worker возможны реальные Telegram/CRM/webhook-уведомления.
 
 set -uo pipefail
 
-# ---------------------------------------------------------------
-# Загружаем переменные из .env, если файл существует.
-# Нужно, чтобы получить API_KEY и другие настройки.
-# ---------------------------------------------------------------
 if [[ -f .env ]]; then
   set -a
   source .env
   set +a
 fi
 
-# ---------------------------------------------------------------
-# Базовые настройки.
-# BASE_URL — адрес nginx.
-# API_PREFIX — префикс API, если у тебя другой, поменяй здесь.
-# API_KEY — ключ из .env.
-# ---------------------------------------------------------------
-BASE_URL="${BASE_URL:-http://localhost}"
+BASE_URL="${BASE_URL:-http://localhost:8080}"
+NGINX_URL="${NGINX_URL:-http://localhost}"
 API_PREFIX="${API_PREFIX:-/api/v1}"
 API_KEY="${API_KEY:-}"
 
-# ---------------------------------------------------------------
-# Проверяем, что API_KEY задан.
-# Без него большинство защищённых запросов вернёт 401.
-# ---------------------------------------------------------------
+BASE_URL="${BASE_URL%/}"
+NGINX_URL="${NGINX_URL%/}"
+
+for dependency in curl jq; do
+  if ! command -v "$dependency" >/dev/null 2>&1; then
+    echo "ERROR: не установлен $dependency" >&2
+    exit 2
+  fi
+done
+
 if [[ -z "$API_KEY" ]]; then
-  echo "ERROR: API_KEY не задан. Добавь его в .env" >&2
-  exit 1
+  echo "ERROR: API_KEY не задан. Добавь его в .env или окружение." >&2
+  exit 2
 fi
 
-# ---------------------------------------------------------------
-# Уникальный email для тестового лида.
-# timestamp нужен, чтобы повторные запуски не конфликтовали.
-# ---------------------------------------------------------------
-TIMESTAMP="$(date +%s)"
-TEST_EMAIL="smoke+${TIMESTAMP}@example.com"
+TMP_DIR="$(mktemp -d)" || exit 2
+trap 'rm -rf "$TMP_DIR"' EXIT
 
-# ---------------------------------------------------------------
-# Вспомогательная функция: печатает заголовок сценария.
-# ---------------------------------------------------------------
-print_header() {
-  echo
-  echo "=================================================="
-  echo "$1"
-  echo "=================================================="
+RUN_ID="$(date +%s)-$$"
+LEADS_URL="${BASE_URL}${API_PREFIX}/leads"
+
+PASSED=0
+FAILED=0
+SKIPPED=0
+FAILURES=()
+SKIPS=()
+
+LAST_BODY=""
+LAST_OK=0
+LEAD_ID=""
+
+fail() {
+  local message="$1"
+
+  FAILED=$((FAILED + 1))
+  FAILURES+=("$message")
+  printf 'FAIL: %s\n' "$message"
 }
 
-# ---------------------------------------------------------------
-# Вспомогательная функция для HTTP-запроса.
+skip() {
+  local name="$1"
+  local reason="$2"
+
+  SKIPPED=$((SKIPPED + 1))
+  SKIPS+=("$name — $reason")
+  printf '\nSKIP: %s — %s\n' "$name" "$reason"
+}
+
 # Аргументы:
-#   $1 — HTTP-метод (GET, POST, PATCH, DELETE)
-#   $2 — URL
-#   остальные аргументы — дополнительные параметры curl
-# ---------------------------------------------------------------
-request() {
-  local method="$1"
-  local url="$2"
-  shift 2
+#   название, ожидаемые коды через пробел, метод, URL,
+#   режим авторизации: valid / none / wrong,
+#   дополнительные аргументы curl.
+check() {
+  local name="$1"
+  local expected="$2"
+  local method="$3"
+  local url="$4"
+  local auth="$5"
+  shift 5
 
-  echo
-  echo ">>> ${method} ${url}"
-  curl -sS -i \
-    -X "$method" \
-    -H "X-API-Key: ${API_KEY}" \
-    -H 'Content-Type: application/json' \
-    "$@" \
-    "$url"
-  echo
+  local status
+  local curl_rc=0
+  local body_file="$TMP_DIR/body"
+  local error_file="$TMP_DIR/error"
+  local -a headers=(
+    -H "Content-Type: application/json"
+  )
+
+  case "$auth" in
+    valid)
+      headers+=(-H "X-API-Key: ${API_KEY}")
+      ;;
+    wrong)
+      headers+=(-H "X-API-Key: wrong-key")
+      ;;
+    none)
+      ;;
+    *)
+      fail "$name — неизвестный режим авторизации: $auth"
+      return 0
+      ;;
+  esac
+
+  LAST_BODY=""
+  LAST_OK=0
+
+  : > "$body_file"
+  : > "$error_file"
+
+  printf '\n==================================================\n'
+  printf '%s\n' "$name"
+  printf '>>> %s %s\n' "$method" "$url"
+
+  status="$(
+    curl -sS \
+      --connect-timeout 5 \
+      --max-time 20 \
+      -X "$method" \
+      "${headers[@]}" \
+      -o "$body_file" \
+      -w '%{http_code}' \
+      "$@" \
+      "$url" \
+      2>"$error_file"
+  )" || curl_rc=$?
+
+  LAST_BODY="$(cat "$body_file")"
+
+  if [[ -n "$LAST_BODY" ]]; then
+    if jq . "$body_file" >/dev/null 2>&1; then
+      jq . "$body_file"
+    else
+      cat "$body_file"
+      printf '\n'
+    fi
+  fi
+
+  if (( curl_rc != 0 )); then
+    fail "$name — ошибка curl $curl_rc: $(cat "$error_file")"
+  elif [[ " $expected " == *" $status "* ]]; then
+    PASSED=$((PASSED + 1))
+    LAST_OK=1
+    printf 'PASS: HTTP %s\n' "$status"
+  else
+    fail "$name — ожидался HTTP [$expected], получен HTTP $status"
+  fi
+
+  # Не останавливаем весь набор после проваленной проверки.
+  return 0
 }
 
-# ---------------------------------------------------------------
-# 1. Health check.
-# Проверяем, что API живой.
-# Ожидаем HTTP 200.
-# ---------------------------------------------------------------
-print_header "1. Health check"
-request GET "$BASE_URL/healthz"
+check "1. Health check" \
+  "200" GET "$BASE_URL/healthz" none
 
-# ---------------------------------------------------------------
-# 2. Создание полного лида.
-# Проверяем основной happy-path.
-# Ожидаем HTTP 200 или 201.
-# ---------------------------------------------------------------
-print_header "2. Create full lead"
-CREATE_RESPONSE="$(curl -sS -X POST "$BASE_URL${API_PREFIX}/leads" \
-  -H "X-API-Key: ${API_KEY}" \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "source": "manual",
-    "name": "Иван Петров",
-    "email": "'"${TEST_EMAIL}"'",
-    "phone": "+79990000001",
-    "message": "Тестовая заявка",
-    "status": "new"
-  }')"
+check "2. Create full lead" \
+  "200 201" POST "$LEADS_URL" valid \
+  --data "$(jq -n \
+    --arg email "smoke+${RUN_ID}@example.com" \
+    '{
+      source: "manual",
+      name: "Иван Петров",
+      email: $email,
+      phone: "+79990000001",
+      message: "Тестовая заявка",
+      status: "new"
+    }')"
 
-echo "$CREATE_RESPONSE"
+# Отдельная проверка: создание должно вернуть числовой ID.
+if (( LAST_OK == 1 )); then
+  LEAD_ID="$(
+    jq -r '.id // empty' <<< "$LAST_BODY" 2>/dev/null
+  )" || LEAD_ID=""
 
-# ---------------------------------------------------------------
-# 3. Извлекаем ID созданного лида.
-# Сначала пробуем jq, если он установлен.
-# Если jq нет — простой fallback через sed.
-# ---------------------------------------------------------------
-if command -v jq >/dev/null 2>&1; then
-  LEAD_ID="$(echo "$CREATE_RESPONSE" | jq -r '.id // empty')"
+  if [[ "$LEAD_ID" =~ ^[0-9]+$ ]]; then
+    PASSED=$((PASSED + 1))
+    printf 'PASS: 3. Extract lead ID — %s\n' "$LEAD_ID"
+  else
+    LEAD_ID=""
+    fail "3. Extract lead ID — в ответе нет числового поля .id"
+  fi
 else
-  LEAD_ID="$(echo "$CREATE_RESPONSE" | sed -n 's/.*"id":[[:space:]]*\([0-9][0-9]*\).*/\1/p')"
+  skip "3. Extract lead ID" "создание полного лида не прошло"
 fi
 
-# ---------------------------------------------------------------
-# 4. Создание минимального лида.
-# Проверяем, что обязательные поля работают.
-# ---------------------------------------------------------------
-print_header "4. Create minimal lead"
-request POST "$BASE_URL${API_PREFIX}/leads" \
-  -d '{
-    "source": "manual",
-    "name": "Мария Смирнова",
-    "email": "maria@example.com",
-    "message": "Заявка без телефона"
-  }'
+check "4. Create minimal lead" \
+  "200 201" POST "$LEADS_URL" valid \
+  --data "$(jq -n \
+    --arg email "maria+${RUN_ID}@example.com" \
+    '{
+      source: "manual",
+      name: "Мария Смирнова",
+      email: $email,
+      message: "Заявка без телефона"
+    }')"
 
-# ---------------------------------------------------------------
-# 5. Создание лида из Telegram.
-# Проверяем другой source.
-# ---------------------------------------------------------------
-print_header "5. Create Telegram lead"
-request POST "$BASE_URL${API_PREFIX}/leads" \
-  -d '{
-    "source": "telegram",
-    "name": "Алексей Иванов",
-    "email": "alexey@example.com",
-    "phone": "+79990000003",
-    "message": "Заявка из Telegram",
-    "status": "new"
-  }'
+check "5. Create Telegram lead" \
+  "200 201" POST "$LEADS_URL" valid \
+  --data "$(jq -n \
+    --arg email "alexey+${RUN_ID}@example.com" \
+    '{
+      source: "telegram",
+      name: "Алексей Иванов",
+      email: $email,
+      phone: "+79990000003",
+      message: "Заявка из Telegram",
+      status: "new"
+    }')"
 
-# ---------------------------------------------------------------
-# 6. Получить список лидов.
-# ---------------------------------------------------------------
-print_header "6. List leads"
-request GET "$BASE_URL${API_PREFIX}/leads"
+check "6. List leads" \
+  "200" GET "$LEADS_URL" valid
 
-# ---------------------------------------------------------------
-# 7. Список с пагинацией.
-# ---------------------------------------------------------------
-print_header "7. List leads with pagination"
-request GET "$BASE_URL${API_PREFIX}/leads?limit=10&offset=0"
+check "7. List leads with pagination" \
+  "200" GET "$LEADS_URL?limit=10&offset=0" valid
 
-# ---------------------------------------------------------------
-# 8. Фильтр по статусу.
-# ---------------------------------------------------------------
-print_header "8. Filter leads by status"
-request GET "$BASE_URL${API_PREFIX}/leads?status=new"
+check "8. Filter leads by status" \
+  "200" GET "$LEADS_URL?status=new" valid
 
-# ---------------------------------------------------------------
-# 9. Фильтр по источнику.
-# ---------------------------------------------------------------
-print_header "9. Filter leads by source"
-request GET "$BASE_URL${API_PREFIX}/leads?source=manual"
+check "9. Filter leads by source" \
+  "200" GET "$LEADS_URL?source=manual" valid
 
-# ---------------------------------------------------------------
-# 10. Получить один лид по ID.
-# ---------------------------------------------------------------
-print_header "10. Get lead by ID"
 if [[ -n "$LEAD_ID" ]]; then
-  request GET "$BASE_URL${API_PREFIX}/leads/${LEAD_ID}"
+  check "10. Get lead by ID" \
+    "200" GET "$LEADS_URL/$LEAD_ID" valid
+
+  check "11. Update lead status" \
+    "200 204" PATCH "$LEADS_URL/$LEAD_ID" valid \
+    --data '{"status":"in_progress"}'
+
+  check "12. Delete lead" \
+    "200 204" DELETE "$LEADS_URL/$LEAD_ID" valid
 else
-  echo "SKIP: LEAD_ID не найден"
+  skip "10. Get lead by ID" "LEAD_ID не получен"
+  skip "11. Update lead status" "LEAD_ID не получен"
+  skip "12. Delete lead" "LEAD_ID не получен"
 fi
 
-# ---------------------------------------------------------------
-# 11. Обновить статус лида.
-# ---------------------------------------------------------------
-print_header "11. Update lead status"
-if [[ -n "$LEAD_ID" ]]; then
-  request PATCH "$BASE_URL${API_PREFIX}/leads/${LEAD_ID}" \
-    -d '{"status":"in_progress"}'
-else
-  echo "SKIP: LEAD_ID не найден"
-fi
+check "13. Unauthorized: no API key" \
+  "401" GET "$LEADS_URL" none
 
-# ---------------------------------------------------------------
-# 12. Удалить лид.
-# ВНИМАНИЕ: это удалит тестовый лид.
-# ---------------------------------------------------------------
-print_header "12. Delete lead"
-if [[ -n "$LEAD_ID" ]]; then
-  request DELETE "$BASE_URL${API_PREFIX}/leads/${LEAD_ID}"
-else
-  echo "SKIP: LEAD_ID не найден"
-fi
+check "14. Unauthorized: wrong API key" \
+  "401" GET "$LEADS_URL" wrong
 
-# ---------------------------------------------------------------
-# 13. Ошибка авторизации: нет API-ключа.
-# Ожидаем HTTP 401.
-# ---------------------------------------------------------------
-print_header "13. Unauthorized: no API key"
-curl -sS -i "$BASE_URL${API_PREFIX}/leads"
-echo
+check "15. Validation error: empty body" \
+  "400" POST "$LEADS_URL" valid \
+  --data '{}'
 
-# ---------------------------------------------------------------
-# 14. Ошибка авторизации: неверный API-ключ.
-# Ожидаем HTTP 401.
-# ---------------------------------------------------------------
-print_header "14. Unauthorized: wrong API key"
-curl -sS -i "$BASE_URL${API_PREFIX}/leads" \
-  -H "X-API-Key: wrong-key"
-echo
-
-# ---------------------------------------------------------------
-# 15. Ошибка валидации: пустое тело.
-# Ожидаем HTTP 400.
-# ---------------------------------------------------------------
-print_header "15. Validation error: empty body"
-request POST "$BASE_URL${API_PREFIX}/leads" \
-  -d '{}'
-
-# ---------------------------------------------------------------
-# 16. Ошибка валидации: невалидный email.
-# Ожидаем HTTP 400.
-# ---------------------------------------------------------------
-print_header "16. Validation error: invalid email"
-request POST "$BASE_URL${API_PREFIX}/leads" \
-  -d '{
+check "16. Validation error: invalid email" \
+  "400" POST "$LEADS_URL" valid \
+  --data '{
     "source": "manual",
     "name": "Bad Email",
     "email": "not-an-email",
     "message": "Validation test"
   }'
 
-# ---------------------------------------------------------------
-# 17. Ошибка валидации: невалидный JSON.
-# Ожидаем HTTP 400.
-# ---------------------------------------------------------------
-print_header "17. Validation error: invalid JSON"
-request POST "$BASE_URL${API_PREFIX}/leads" \
-  -d '{ invalid json }'
+check "17. Validation error: invalid JSON" \
+  "400" POST "$LEADS_URL" valid \
+  --data '{ invalid json }'
 
-# ---------------------------------------------------------------
-# 18. Несуществующий лид.
-# Ожидаем HTTP 404.
-# ---------------------------------------------------------------
-print_header "18. Not found"
-request GET "$BASE_URL${API_PREFIX}/leads/999999"
+# При наличии удалённого ID проверяем его,
+# иначе используем ID из исходного скрипта.
+NOT_FOUND_ID="${LEAD_ID:-999999}"
 
-# ---------------------------------------------------------------
-# 19. Неправильный HTTP-метод.
-# Ожидаем HTTP 405.
-# ---------------------------------------------------------------
-print_header "19. Method not allowed"
-request PUT "$BASE_URL${API_PREFIX}/leads"
+check "18. Not found" \
+  "404" GET "$LEADS_URL/$NOT_FOUND_ID" valid
 
-# ---------------------------------------------------------------
-# 20. Проверка nginx.
-# Сравниваем ответ через nginx и напрямую в API.
-# ---------------------------------------------------------------
-print_header "20. Nginx vs direct API"
-echo "--- через nginx ---"
-curl -sS -i "$BASE_URL/healthz"
-echo
-echo "--- напрямую в API ---"
-curl -sS -i "http://localhost:8080/healthz"
-echo
+check "19. Method not allowed" \
+  "405" PUT "$LEADS_URL" valid
 
-echo
-echo "Тесты завершены."
+# RUN_NGINX_TEST=0 — для локальной разработки без nginx.
+if [[ "${RUN_NGINX_TEST:-1}" == "1" ]]; then
+  check "20a. Health through nginx" \
+    "200" GET "$NGINX_URL/healthz" none
+else
+  skip "20a. Health through nginx" "RUN_NGINX_TEST=0"
+fi
+
+DIRECT_API_URL="${DIRECT_API_URL:-http://localhost:8080}"
+
+check "20b. Direct API health" \
+  "200" GET "${DIRECT_API_URL%/}/healthz" none
+
+printf '\n==================================================\n'
+printf 'РЕЗУЛЬТАТЫ\n'
+printf '==================================================\n'
+printf 'Успешно:  %d\n' "$PASSED"
+printf 'Провалено: %d\n' "$FAILED"
+printf 'Пропущено: %d\n' "$SKIPPED"
+
+if (( FAILED > 0 )); then
+  printf '\nНе прошли:\n'
+  for item in "${FAILURES[@]}"; do
+    printf '  - %s\n' "$item"
+  done
+fi
+
+if (( SKIPPED > 0 )); then
+  printf '\nПропущены:\n'
+  for item in "${SKIPS[@]}"; do
+    printf '  - %s\n' "$item"
+  done
+fi
+
+printf '\n'
+
+if (( FAILED > 0 )); then
+  printf 'ИТОГ: НЕ ОК — успешно %d, провалено %d, пропущено %d.\n' \
+    "$PASSED" "$FAILED" "$SKIPPED"
+  exit 1
+elif (( SKIPPED > 0 )); then
+  printf 'ИТОГ: все выполненные проверки прошли, но %d пропущено.\n' \
+    "$SKIPPED"
+  exit 0
+else
+  printf 'ИТОГ: ВСЁ ОК — все %d проверок прошли.\n' "$PASSED"
+  exit 0
+fi
