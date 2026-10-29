@@ -79,3 +79,35 @@ func (h *WebhookHandler) Delete(w http.ResponseWriter, r *http.Request) {
 
 	http.Error(w, "not implemented", http.StatusNotImplemented)
 }
+
+type WebhookTestHandler struct {
+	svc *service.WebhookTestService
+}
+
+func NewWebhookTestHandler(
+	svc *service.WebhookTestService,
+) *WebhookTestHandler {
+	return &WebhookTestHandler{
+		svc: svc,
+	}
+}
+
+func (h *WebhookTestHandler) SendTest(
+	w http.ResponseWriter,
+	r *http.Request,
+) {
+	_, ok := GetOrganizationID(r)
+	if !ok {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	webhookURL := r.FormValue("url")
+
+	if err := h.svc.SendTest(r.Context(), webhookURL); err != nil {
+		http.Error(w, "failed to send webhook test", http.StatusInternalServerError)
+		return
+	}
+
+	http.Redirect(w, r, "/admin/webhooks", http.StatusSeeOther)
+}

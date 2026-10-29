@@ -47,11 +47,6 @@ type UpdateLeadInput struct {
 	OrganizationID int64
 }
 
-type ListLeadsInput struct {
-	Limit  int
-	Offset int
-}
-
 type ListLeadsResult struct {
 	Items []*domain.Lead
 	Total int64
@@ -236,4 +231,46 @@ func (s *LeadService) UpdateStatus(
 	}
 
 	return s.repo.UpdateStatus(ctx, id, organizationID, status)
+}
+
+type ListLeadsInput struct {
+	OrganizationID int64
+	Status         *domain.LeadStatus
+	Source         *string
+	Search         string
+	Sort           string
+	Limit          int
+	Offset         int
+}
+
+func (s *LeadService) ListForOrganization(
+	ctx context.Context,
+	input ListLeadsInput,
+) ([]domain.Lead, int, error) {
+	if input.Limit <= 0 {
+		input.Limit = 50
+	}
+
+	if input.Limit > 100 {
+		input.Limit = 100
+	}
+
+	if input.Offset < 0 {
+		input.Offset = 0
+	}
+
+	if input.Sort != "created_at_asc" {
+		input.Sort = "created_at_desc"
+	}
+
+	return s.repo.ListForOrganization(
+		ctx,
+		input.OrganizationID,
+		input.Status,
+		input.Source,
+		input.Search,
+		input.Sort,
+		input.Limit,
+		input.Offset,
+	)
 }

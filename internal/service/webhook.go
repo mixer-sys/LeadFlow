@@ -630,3 +630,86 @@ func (s *WebhookService) RetryDeadLetterDelivery(
 ) error {
 	return s.repo.ResetDeadLetterDelivery(ctx, deliveryID)
 }
+
+type WebhookTestService struct {
+	client *http.Client
+}
+
+func NewWebhookTestService() *WebhookTestService {
+	return &WebhookTestService{
+		client: &http.Client{
+			Timeout: 10 * time.Second,
+		},
+	}
+}
+
+type WebhookTestPayload struct {
+	Event     string                 `json:"event"`
+	LeadID    int64                  `json:"lead_id"`
+	Source    string                 `json:"source"`
+	Name      string                 `json:"name"`
+	Email     string                 `json:"email"`
+	Phone     string                 `json:"phone"`
+	Message   string                 `json:"message"`
+	Timestamp string                 `json:"timestamp"`
+	Test      bool                   `json:"test"`
+	Meta      map[string]interface{} `json:"meta,omitempty"`
+}
+
+func (s *WebhookTestService) SendTest(
+	ctx context.Context,
+	webhookURL string,
+) error {
+	if webhookURL == "" {
+		return fmt.Errorf("webhook url is required")
+	}
+
+	payload := WebhookTestPayload{
+		Event:     "lead.created.test",
+		LeadID:    0,
+		Source:    "test",
+		Name:      "LeadFlow Test",
+		Email:     "test@example.com",
+		Phone:     "",
+		Message:   "Это тестовое событие из LeadFlow",
+		Timestamp: time.Now().UTC().Format(time.RFC3339),
+		Test:      true,
+		Meta: map[string]interface{}{
+			"origin": "leadflow-admin",
+		},
+	}
+
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("marshal webhook test payload: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(
+		ctx,
+		http.MethodPost,
+		webhookURL,
+		bytes.NewBuffer(body),
+	)
+	if err != nil {
+		return fmt.Errorf("create webhook test request: %w", err)
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-LeadFlow-Event", "lead.created.test")
+	req.Header.Set("X-LeadFlow-Test", "true")
+
+	resp, err := s.client.Do(req)
+	if err != nil {
+		return fmt.Errorf("send webhook test request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf(
+			"webhook test failed: unexpected status %s",
+			resp.Status,
+		)
+	}
+
+	return nil
+}

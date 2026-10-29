@@ -107,14 +107,8 @@ func (h *LeadHandler) UpdateStatus(
 		return
 	}
 
-	if req.Status == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{
-			"error": "status is required",
-		})
-		return
-	}
-
 	status := domain.LeadStatus(req.Status)
+
 	if !status.IsValid() {
 		writeJSON(w, http.StatusBadRequest, map[string]string{
 			"error": "invalid status",
@@ -454,23 +448,6 @@ func (h *LeadListHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 
 	_ = json.NewEncoder(w).Encode(resp)
-}
-
-func writeJSON(
-	w http.ResponseWriter,
-	status int,
-	data any,
-) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-
-	if err := json.NewEncoder(w).Encode(data); err != nil {
-		http.Error(
-			w,
-			`{"error":"failed to encode response"}`,
-			http.StatusInternalServerError,
-		)
-	}
 }
 
 func (h *LeadHandler) Delete(

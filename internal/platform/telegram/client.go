@@ -9,6 +9,29 @@ import (
 	"time"
 )
 
+type SenderAdapter struct{}
+
+func NewSenderAdapter() *SenderAdapter {
+	return &SenderAdapter{}
+}
+
+func (a *SenderAdapter) SendMessage(
+	ctx context.Context,
+	botToken string,
+	chatID string,
+	text string,
+) (int64, error) {
+	client := NewClient(botToken)
+
+	return client.SendMessage(
+		ctx,
+		SendMessageParams{
+			ChatID: chatID,
+			Text:   text,
+		},
+	)
+}
+
 type Client struct {
 	token   string
 	apiURL  string

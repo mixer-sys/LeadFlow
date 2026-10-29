@@ -1,6 +1,9 @@
 package domain
 
-import "time"
+import (
+	"errors"
+	"time"
+)
 
 type WebhookDeliveryStatus string
 
@@ -9,6 +12,8 @@ const (
 	WebhookDeliveryDelivered WebhookDeliveryStatus = "delivered"
 	WebhookDeliveryFailed    WebhookDeliveryStatus = "failed"
 )
+
+var ErrWebhookNotFound = errors.New("webhook not found")
 
 type WebhookDelivery struct {
 	ID          int64
@@ -26,11 +31,14 @@ type WebhookDelivery struct {
 }
 
 type Webhook struct {
-	ID           int64
-	URL          string
-	IsActive     bool
-	FailureCount int
-	OpenedUntil  *time.Time
-	CreatedAt    time.Time
-	UpdatedAt    time.Time
+	ID             int64
+	OrganizationID int64
+	URL            string
+	Secret         string
+	Events         string
+	IsActive       bool
+	FailureCount   int
+	OpenedUntil    *time.Time
+	CreatedAt      time.Time
+	UpdatedAt      time.Time
 }

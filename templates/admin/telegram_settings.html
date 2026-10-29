@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="utf-8">
+    <title>LeadFlow — Telegram</title>
+
+    <style>
+        body { font-family: Arial, sans-serif; margin: 24px; }
+        .card { max-width: 480px; }
+        input { width: 100%; padding: 8px; margin-bottom: 12px; }
+        button { padding: 8px 16px; cursor: pointer; }
+        .nav { margin-bottom: 16px; }
+    </style>
+</head>
+
+<body>
+    <div class="nav">
+        <a href="/admin/leads">Лиды</a>
+    </div>
+
+    <h1>Настройки Telegram</h1>
+
+    <form method="post" action="/admin/settings/telegram">
+        <label>
+            <input
+                type="checkbox"
+                name="enabled"
+                {{ if .Enabled }}checked{{ end }}
+            >
+            Включить уведомления
+        </label>
+
+        <input
+            type="password"
+            name="bot_token"
+            placeholder="Новый Bot Token"
+        >
+
+        <input
+            type="text"
+            name="chat_id"
+            value="{{ .ChatID }}"
+            placeholder="Chat ID"
+            required
+        >
+
+        <button type="submit">Сохранить</button>
+    </form>
+
+    <form method="post" action="/admin/settings/telegram/test">
+        <button type="submit">Отправить тестовое сообщение</button>
+    </form>
+</body>
+</html>

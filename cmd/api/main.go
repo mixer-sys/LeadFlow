@@ -4,8 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"leadflow/internal/logger"
-	grpcmiddleware "leadflow/internal/middleware/grpc"
 	"log/slog"
 	"net"
 	"net/http"
@@ -17,19 +15,21 @@ import (
 	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 
-	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/reflection"
 
 	leadflowv1 "leadflow/api/gen/leadflow/v1"
 	"leadflow/internal/auth"
-	"leadflow/internal/config"
+	config "leadflow/internal/config"
 	"leadflow/internal/handler"
 	grpchandler "leadflow/internal/handler/grpc"
+	"leadflow/internal/logger"
 	"leadflow/internal/middleware"
+	grpcmiddleware "leadflow/internal/middleware/grpc"
+	"leadflow/internal/platform/crypto"
 	"leadflow/internal/platform/database"
 	"leadflow/internal/platform/queue"
+	"leadflow/internal/platform/telegram"
 	"leadflow/internal/platform/telemetry"
 	"leadflow/internal/repository"
 	"leadflow/internal/service"
@@ -38,14 +38,14 @@ import (
 func main() {
 	cfg := config.New()
 
-	logger := logger.New(logger.Config{
+	log := logger.New(logger.Config{
 		Level:  cfg.LogLevel,
 		Format: cfg.LogFormat,
 	})
 
-	slog.SetDefault(logger)
+	slog.SetDefault(log)
 
-	logger.Info("starting leadflow",
+	log.Info("starting leadflow",
 		slog.String("http_addr", cfg.HTTPAddr),
 		slog.String("log_level", cfg.LogLevel),
 		slog.String("log_format", cfg.LogFormat),
@@ -53,15 +53,11 @@ func main() {
 
 	ctx := context.Background()
 
-	shutdownTracing, initTraceErr := telemetry.InitTracer(
-		ctx,
-		cfg.OTLPEndpoint,
-	)
-	if initTraceErr != nil {
-		logger.Error("failed to initialize tracing", "error", initTraceErr)
+	shutdownTracing, err := telemetry.InitTracer(ctx, cfg.OTLPEndpoint)
+	if err != nil {
+		log.Error("failed to initialize tracing", "error", err)
 		os.Exit(1)
 	}
-
 	defer shutdownTracing(context.Background())
 
 	dsn := fmt.Sprintf(
@@ -76,147 +72,43 @@ func main() {
 
 	db, err := database.NewPostgres(ctx, dsn)
 	if err != nil {
-		logger.Error("failed to connect to postgres", "error", err)
+		log.Error("failed to connect to postgres", "error", err)
 		os.Exit(1)
 	}
-
-	defer func() {
-		_ = db.Close(ctx)
-	}()
+	defer db.Close(context.Background())
 
 	redisQueue := queue.NewRedisQueue(cfg.RedisAddr, "leads")
 
-	leadRepo := repository.NewLeadRepo(db.Pool())
-
-	leadGRPC := grpchandler.NewLeadHandler(leadRepo, logger)
-
-	grpcServer := grpc.NewServer(
-		grpc.StatsHandler(otelgrpc.NewServerHandler()),
-		grpc.ChainUnaryInterceptor(
-			grpcmiddleware.RequestIDUnaryServerInterceptor(logger),
-			grpcmiddleware.AuthUnaryServerInterceptor(
-				logger,
-				cfg.GRPCInternalToken,
-			),
-		),
-	)
-
-	leadflowv1.RegisterLeadServiceServer(grpcServer, leadGRPC)
-	reflection.Register(grpcServer)
+	grpcServer := newGRPCServer(&cfg, db, log)
 
 	grpcListener, err := net.Listen("tcp", ":9090")
 	if err != nil {
-		logger.Error("failed to listen grpc", "error", err)
+		log.Error("failed to listen grpc", "error", err)
 		os.Exit(1)
 	}
 
 	go func() {
+		log.Info(
+			"grpc server started",
+			slog.String("address", grpcListener.Addr().String()),
+		)
+
 		if err := grpcServer.Serve(grpcListener); err != nil {
-			logger.Error("grpc server failed", "error", err)
+			log.Error("grpc server failed", "error", err)
 		}
 	}()
 
-	logger.Info("grpc server started", "address", ":9090")
-
-	orgRepo := repository.NewOrganizationRepo(db.Pool())
-	webhookRepo := repository.NewWebhookRepo(db.Pool())
-	apiKeyRepo := repository.NewAPIKeyRepo(db.Pool())
-
-	leadSvc := service.NewLeadService(leadRepo, redisQueue)
-	orgSvc := service.NewOrganizationService(orgRepo)
-	webhookSvc := service.NewWebhookService(webhookRepo)
-	apiKeyService := service.NewAPIKeyService(apiKeyRepo)
-
-	leadHandler := handler.NewLeadHandler(leadSvc)
-	leadListHandler := handler.NewLeadListHandler(leadSvc)
-	orgHandler := handler.NewOrganizationHandler(orgSvc)
-	webhookHandler := handler.NewWebhookHandler(webhookSvc)
-	apiKeyHandler := handler.NewAPIKeyHandler(apiKeyService)
-
-	webhookAdminHandler := handler.NewWebhookAdminHandler(webhookSvc)
-
-	adminLeadsHandler, err := handler.NewAdminLeadsHandler(leadSvc)
-	if err != nil {
-		logger.Error("failed to create admin leads handler", "error", err)
-		os.Exit(1)
-	}
-
-	mux := http.NewServeMux()
-
-	apiKeyAuth := auth.APIKeyAuth(apiKeyService)
-
-	mux.HandleFunc("GET /healthz", healthHandler)
-
-	mux.HandleFunc("GET /readyz", func(w http.ResponseWriter, r *http.Request) {
-		readyHandler(w, r, db.Pool(), redisQueue)
-	})
-
-	mux.HandleFunc(
-		"POST /api/v1/leads",
-		apiKeyAuth(http.HandlerFunc(leadHandler.Create)).ServeHTTP,
-	)
-	mux.Handle("GET /api/v1/leads", apiKeyAuth(leadListHandler))
-	mux.Handle("GET /admin/leads", apiKeyAuth(adminLeadsHandler))
-	mux.Handle(
-		"GET /api/v1/leads/{id}",
-		apiKeyAuth(http.HandlerFunc(leadHandler.GetByID)),
-	)
-	mux.Handle(
-		"DELETE /api/v1/leads/{id}",
-		apiKeyAuth(http.HandlerFunc(leadHandler.Delete)),
-	)
-	mux.Handle(
-		"PUT /api/v1/leads/{id}",
-		apiKeyAuth(http.HandlerFunc(leadHandler.Put)),
-	)
-	mux.Handle(
-		"PATCH /api/v1/leads/{id}",
-		apiKeyAuth(http.HandlerFunc(leadHandler.UpdateStatus)),
-	)
-
-	mux.HandleFunc("POST /api/v1/organizations", orgHandler.Create)
-
-	mux.HandleFunc("POST /api/v1/webhooks", webhookHandler.Create)
-	mux.HandleFunc("GET /api/v1/webhooks", webhookHandler.List)
-	mux.HandleFunc("DELETE /api/v1/webhooks/", webhookHandler.Delete)
-
-	mux.HandleFunc("POST /api/v1/api-keys", apiKeyHandler.Create)
-	mux.HandleFunc("GET /api/v1/api-keys", apiKeyHandler.List)
-	mux.HandleFunc("DELETE /api/v1/api-keys/", apiKeyHandler.Delete)
-
-	mux.HandleFunc(
-		"GET /admin/webhooks/deliveries/stats",
-		apiKeyAuth(http.HandlerFunc(webhookAdminHandler.Stats)).ServeHTTP,
-	)
-
-	mux.Handle("GET /metrics", promhttp.Handler())
-
-	var httpHandler http.Handler = mux
-
-	httpHandler = otelhttp.NewHandler(
-		httpHandler,
-		"leadflow-http",
-	)
-
-	httpHandler = middleware.RequestLogging(logger)(httpHandler)
-
-	server := &http.Server{
-		Addr:              cfg.HTTPAddr,
-		Handler:           httpHandler,
-		ReadTimeout:       10 * time.Second,
-		ReadHeaderTimeout: 5 * time.Second,
-		WriteTimeout:      30 * time.Second,
-		IdleTimeout:       60 * time.Second,
-	}
+	httpServer := newHTTPServer(&cfg, db, redisQueue, log)
 
 	errCh := make(chan error, 1)
 
 	go func() {
-		logger.Info("api server started",
-			slog.String("address", server.Addr),
+		log.Info(
+			"api server started",
+			slog.String("address", httpServer.Addr),
 		)
 
-		if err := server.ListenAndServe(); err != nil &&
+		if err := httpServer.ListenAndServe(); err != nil &&
 			!errors.Is(err, http.ErrServerClosed) {
 			errCh <- err
 		}
@@ -227,7 +119,8 @@ func main() {
 
 	select {
 	case sig := <-stopCh:
-		logger.Info("shutdown signal received",
+		log.Info(
+			"shutdown signal received",
 			slog.String("signal", sig.String()),
 		)
 
@@ -237,55 +130,157 @@ func main() {
 		)
 		defer cancel()
 
-		_ = server.Shutdown(shutdownCtx)
+		_ = httpServer.Shutdown(shutdownCtx)
 		grpcServer.GracefulStop()
 
 	case err := <-errCh:
-		logger.Error("api server failed", "error", err)
+		log.Error("api server failed", "error", err)
 		os.Exit(1)
 	}
 
-	logger.Info("api server stopped")
+	log.Info("api server stopped")
 }
 
-func healthHandler(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
+func newGRPCServer(
+	cfg *config.Config,
+	db *database.Postgres,
+	log *slog.Logger,
+) *grpc.Server {
+	leadRepo := repository.NewLeadRepo(db.Pool())
+	leadGRPC := grpchandler.NewLeadHandler(leadRepo, log)
 
-	_, _ = w.Write([]byte(`{"status":"ok"}`))
+	server := grpc.NewServer(
+		grpc.StatsHandler(otelgrpc.NewServerHandler()),
+		grpc.ChainUnaryInterceptor(
+			grpcmiddleware.RequestIDUnaryServerInterceptor(log),
+			grpcmiddleware.AuthUnaryServerInterceptor(
+				log,
+				cfg.GRPCInternalToken,
+			),
+		),
+	)
+
+	leadflowv1.RegisterLeadServiceServer(server, leadGRPC)
+	reflection.Register(server)
+
+	return server
 }
 
-func readyHandler(
-	w http.ResponseWriter,
-	r *http.Request,
-	db *pgxpool.Pool,
+func newHTTPServer(
+	cfg *config.Config,
+	db *database.Postgres,
 	redisQueue *queue.RedisQueue,
-) {
-	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
-	defer cancel()
-
-	if err := db.Ping(ctx); err != nil {
-		http.Error(
-			w,
-			`{"status":"not_ready","dependency":"postgres"}`,
-			http.StatusServiceUnavailable,
-		)
-
-		return
+	log *slog.Logger,
+) *http.Server {
+	encryptor, err := crypto.NewEncryptor(cfg.EncryptionKey)
+	if err != nil {
+		log.Error("failed to create encryptor", "error", err)
+		os.Exit(1)
 	}
 
-	if err := redisQueue.Ping(ctx); err != nil {
-		http.Error(
-			w,
-			`{"status":"not_ready","dependency":"redis"}`,
-			http.StatusServiceUnavailable,
-		)
+	telegramSender := telegram.NewSenderAdapter()
 
-		return
+	leadRepo := repository.NewLeadRepo(db.Pool())
+	orgRepo := repository.NewOrganizationRepo(db.Pool())
+	webhookRepo := repository.NewWebhookRepo(db.Pool())
+	apiKeyRepo := repository.NewAPIKeyRepo(db.Pool())
+	userRepo := repository.NewUserRepo(db.Pool())
+
+	telegramChannelRepo := telegram.NewChannelRepository(db.Pool())
+
+	leadSvc := service.NewLeadService(leadRepo, redisQueue)
+	orgSvc := service.NewOrganizationService(orgRepo)
+	webhookSvc := service.NewWebhookService(webhookRepo)
+	apiKeySvc := service.NewAPIKeyService(apiKeyRepo)
+	authService := service.NewAuthService(userRepo)
+
+	telegramChannelSvc := service.NewTelegramChannelService(
+		telegramChannelRepo,
+		encryptor,
+		telegramSender,
+	)
+
+	leadHandler := handler.NewLeadHandler(leadSvc)
+	leadListHandler := handler.NewLeadListHandler(leadSvc)
+	orgHandler := handler.NewOrganizationHandler(orgSvc)
+	webhookHandler := handler.NewWebhookHandler(webhookSvc)
+	apiKeyHandler := handler.NewAPIKeyHandler(apiKeySvc)
+	webhookAdminHandler := handler.NewWebhookAdminHandler(webhookSvc)
+	authHandler := handler.NewAuthHandler(authService)
+
+	webhookTestSvc := service.NewWebhookTestService()
+
+	webhookTestHandler := handler.NewWebhookTestHandler(webhookTestSvc)
+
+	pagesHandler, err := handler.NewPagesHandler()
+	if err != nil {
+		log.Error("failed to create pages handler", "error", err)
+		os.Exit(1)
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
+	adminLeadsHandler, err := handler.NewAdminLeadsHandler(leadSvc)
+	if err != nil {
+		log.Error("failed to create admin leads handler", "error", err)
+		os.Exit(1)
+	}
 
-	_, _ = w.Write([]byte(`{"status":"ready"}`))
+	telegramChannelHandler, err := handler.NewTelegramChannelsHandler(
+		telegramChannelSvc,
+	)
+	if err != nil {
+		log.Error(
+			"failed to create telegram channels handler",
+			"error", err,
+		)
+		os.Exit(1)
+	}
+
+	healthHandler := handler.NewHealthHandler(db.Pool(), redisQueue)
+
+	requireSession := handler.RequireSession(authService)
+
+	webhookAdminRepo := repository.NewWebhookAdminRepo(db.Pool())
+	webhookAdminSvc := service.NewWebhookAdminService(webhookAdminRepo)
+
+	webhookSettingsHandler, err := handler.NewWebhookSettingsHandler(
+		webhookAdminSvc,
+	)
+	if err != nil {
+		log.Error("failed to create webhook settings handler", "error", err)
+		os.Exit(1)
+	}
+
+	router := handler.NewRouter(handler.RouterDeps{
+		Lead:         leadHandler,
+		LeadList:     leadListHandler,
+		Organization: orgHandler,
+		Webhook:      webhookHandler,
+		APIKey:       apiKeyHandler,
+		WebhookAdmin: webhookAdminHandler,
+		AdminLeads:   adminLeadsHandler,
+		Health:       healthHandler,
+		Auth:         authHandler,
+
+		APIKeyAuth:     auth.APIKeyAuth(apiKeySvc),
+		RequireSession: requireSession,
+
+		Pages:            pagesHandler,
+		TelegramChannels: telegramChannelHandler,
+		WebhookSettings:  webhookSettingsHandler,
+		WebhookTest:      webhookTestHandler,
+	})
+
+	var httpHandler http.Handler = router
+
+	httpHandler = otelhttp.NewHandler(httpHandler, "leadflow-http")
+	httpHandler = middleware.RequestLogging(log)(httpHandler)
+
+	return &http.Server{
+		Addr:              cfg.HTTPAddr,
+		Handler:           httpHandler,
+		ReadTimeout:       10 * time.Second,
+		ReadHeaderTimeout: 5 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       60 * time.Second,
+	}
 }

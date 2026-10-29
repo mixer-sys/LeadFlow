@@ -5,7 +5,7 @@ import (
 	"strings"
 )
 
-type config struct {
+type Config struct {
 	HTTPAddr string
 
 	DBHost     string
@@ -29,10 +29,11 @@ type config struct {
 	TelegramChatID   string
 
 	Bitrix24WebhookURL string
+	EncryptionKey      string
 }
 
-func New() config {
-	return config{
+func New() Config {
+	return Config{
 		HTTPAddr: getValueOrSecret("HTTP_ADDR", "http_addr", ":8080"),
 
 		DBHost:     getValueOrSecret("DB_HOST", "db_host", "localhost"),
@@ -55,6 +56,8 @@ func New() config {
 		TelegramChatID:   getValueOrSecret("TELEGRAM_CHAT_ID", "telegram_chat_id", ""),
 
 		Bitrix24WebhookURL: getValueOrSecret("BITRIX24_WEBHOOK_URL", "bitrix24_webhook_url", ""),
+
+		EncryptionKey: getValueOrSecret("ENCRYPTION_KEY", "encryption_key", ""),
 	}
 }
 

@@ -621,3 +621,151 @@ func (r *LeadRepo) UpdateStatus(
 
 	return &lead, nil
 }
+
+type ListForOrganizationParams struct {
+	OrganizationID int64
+	Status         *domain.LeadStatus
+	Source         *string
+	Search         string
+	Sort           string
+	Limit          int
+	Offset         int
+}
+
+func (r *LeadRepo) ListForOrganization(
+	ctx context.Context,
+	organizationID int64,
+	status *domain.LeadStatus,
+	source *string,
+	search string,
+	sort string,
+	limit int,
+	offset int,
+) ([]domain.Lead, int, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+
+	if limit > 100 {
+		limit = 100
+	}
+
+	if offset < 0 {
+		offset = 0
+	}
+
+	orderBy := "created_at DESC"
+
+	if sort == "created_at_asc" {
+		orderBy = "created_at ASC"
+	}
+
+	where := "WHERE organization_id = $1"
+	args := []any{organizationID}
+
+	if status != nil {
+		args = append(args, *status)
+		where += fmt.Sprintf(" AND status = $%d", len(args))
+	}
+
+	if source != nil && *source != "" {
+		args = append(args, *source)
+		where += fmt.Sprintf(" AND source = $%d", len(args))
+	}
+
+	if search != "" {
+		args = append(args, "%"+search+"%")
+		searchArg := len(args)
+
+		where += fmt.Sprintf(
+			` AND (
+				COALESCE(name, '') ILIKE $%d
+				OR COALESCE(email, '') ILIKE $%d
+				OR COALESCE(phone, '') ILIKE $%d
+			)`,
+			searchArg,
+			searchArg,
+			searchArg,
+		)
+	}
+
+	var total int
+
+	err := r.pool.QueryRow(
+		ctx,
+		"SELECT COUNT(*) FROM leads "+where,
+		args...,
+	).Scan(&total)
+
+	if err != nil {
+		return nil, 0, fmt.Errorf("count organization leads: %w", err)
+	}
+
+	query := `
+		SELECT
+			id,
+			created_at,
+			updated_at,
+			source,
+			name,
+			email,
+			phone,
+			message,
+			status,
+			processed_at,
+			telegram_message_id,
+			telegram_sent_at,
+			telegram_retry_count,
+			organization_id,
+			bitrix_id
+		FROM leads
+	` + where + fmt.Sprintf(
+		" ORDER BY %s LIMIT $%d OFFSET $%d",
+		orderBy,
+		len(args)+1,
+		len(args)+2,
+	)
+
+	args = append(args, limit, offset)
+
+	rows, err := r.pool.Query(ctx, query, args...)
+	if err != nil {
+		return nil, 0, fmt.Errorf("list organization leads: %w", err)
+	}
+	defer rows.Close()
+
+	leads := make([]domain.Lead, 0, limit)
+
+	for rows.Next() {
+		var lead domain.Lead
+
+		err := rows.Scan(
+			&lead.ID,
+			&lead.CreatedAt,
+			&lead.UpdatedAt,
+			&lead.Source,
+			&lead.Name,
+			&lead.Email,
+			&lead.Phone,
+			&lead.Message,
+			&lead.Status,
+			&lead.ProcessedAt,
+			&lead.TelegramMessageID,
+			&lead.TelegramSentAt,
+			&lead.TelegramRetryCount,
+			&lead.OrganizationID,
+			&lead.BitrixID,
+		)
+		if err != nil {
+			return nil, 0, fmt.Errorf("scan lead: %w", err)
+		}
+
+		leads = append(leads, lead)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, 0, fmt.Errorf("rows error: %w", err)
+	}
+
+	return leads, total, nil
+}

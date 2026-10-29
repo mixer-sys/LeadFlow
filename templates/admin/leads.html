@@ -1,61 +1,268 @@
 <!DOCTYPE html>
 <html lang="ru">
 <head>
-    <meta charset="UTF-8">
-    <title>Leads Admin</title>
+    <meta charset="utf-8">
+    <title>LeadFlow — Лиды</title>
+
     <style>
-        body { font-family: Arial, sans-serif; margin: 20px; }
-        table { border-collapse: collapse; width: 100%; }
-        th, td { border: 1px solid #ccc; padding: 6px 8px; text-align: left; }
-        th { background: #f5f5f5; }
-        tr:nth-child(even) { background: #fafafa; }
-        .muted { color: #777; }
-        a { text-decoration: none; color: #0077cc; }
-        a:hover { text-decoration: underline; }
+        body {
+            font-family: Arial, sans-serif;
+            margin: 24px;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 16px;
+        }
+
+        th,
+        td {
+            border: 1px solid #ddd;
+            padding: 8px;
+            text-align: left;
+        }
+
+        th {
+            background: #f5f5f5;
+        }
+
+        .filters {
+            display: flex;
+            gap: 8px;
+            align-items: center;
+        }
+
+        .pagination {
+            margin-top: 16px;
+            display: flex;
+            gap: 8px;
+        }
+
+        .create-lead {
+            display: grid;
+            gap: 8px;
+            max-width: 420px;
+            margin-bottom: 24px;
+        }
+
+        .status-form select {
+            padding: 4px;
+        }
+
+        .nav {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 16px;
+        }
+
+        .logout-form button {
+            padding: 6px 12px;
+            cursor: pointer;
+        }
     </style>
 </head>
+
 <body>
-    <h1>Leads</h1>
+    <h1>Лиды</h1>
+   
+    <div class="nav">
+        <a href="/admin/leads">Лиды</a>
+        <a href="/admin/settings/telegram">Telegram</a>
+        <a href="/admin/webhooks">Webhooks</a>
+        <form method="post" action="/logout" class="logout-form">
+            <button type="submit">Выйти</button>
+        </form>
+    </div>
+
+    <p>Всего: {{ .Total }}</p>
+
+    <form method="get" action="/admin/leads">
+        <div class="filters">
+            <input
+                type="text"
+                name="search"
+                value="{{ .Search }}"
+                placeholder="Поиск"
+            >
+
+            <select name="status">
+                <option value="">Все статусы</option>
+
+                <option
+                    value="new"
+                    {{ if eq .StatusFilter "new" }}selected{{ end }}
+                >
+                    new
+                </option>
+
+                
+
+                <option
+                    value="processed"
+                    {{ if eq .StatusFilter "processed" }}selected{{ end }}
+                >
+                    processed
+                </option>
+
+                <option
+                    value="failed"
+                    {{ if eq .StatusFilter "failed" }}selected{{ end }}
+                >
+                    failed
+                </option>
+            </select>
+
+            <select name="source">
+                <option value="">Все источники</option>
+
+                <option
+                    value="manual"
+                    {{ if eq .SourceFilter "manual" }}selected{{ end }}
+                >
+                    manual
+                </option>
+
+                <option
+                    value="telegram"
+                    {{ if eq .SourceFilter "telegram" }}selected{{ end }}
+                >
+                    telegram
+                </option>
+            </select>
+
+            <select name="sort">
+                <option
+                    value="created_at_desc"
+                    {{ if eq .Sort "created_at_desc" }}selected{{ end }}
+                >
+                    Сначала новые
+                </option>
+
+                <option
+                    value="created_at_asc"
+                    {{ if eq .Sort "created_at_asc" }}selected{{ end }}
+                >
+                    Сначала старые
+                </option>
+            </select>
+
+            <button type="submit">Применить</button>
+        </div>
+    </form>
+
+    <h2>Создать лид</h2>
+
+    <form method="post" action="/admin/leads" class="create-lead">
+        <input
+            type="text"
+            name="name"
+            placeholder="Имя"
+            required
+        >
+
+        <input
+            type="email"
+            name="email"
+            placeholder="Email"
+        >
+
+        <input
+            type="text"
+            name="phone"
+            placeholder="Телефон"
+        >
+
+        <textarea
+            name="message"
+            placeholder="Сообщение"
+        ></textarea>
+
+        <select name="source">
+            <option value="manual">manual</option>
+            <option value="telegram">telegram</option>
+        </select>
+
+        <button type="submit">Создать</button>
+    </form>
 
     <table>
         <thead>
-        <tr>
-            <th>ID</th>
-            <th>Source</th>
-            <th>Name</th>
-            <th>Email</th>
-            <th>Phone</th>
-            <th>Status</th>
-            <th>Created At</th>
-        </tr>
+            <tr>
+                <th>ID</th>
+                <th>Имя</th>
+                <th>Email</th>
+                <th>Телефон</th>
+                <th>Источник</th>
+                <th>Статус</th>
+                <th>Создан</th>
+            </tr>
         </thead>
+
         <tbody>
-        {{range .Items}}
-        <tr>
-            <td>{{.ID}}</td>
-            <td>{{.Source}}</td>
-            <td>{{if .Name}}{{.Name}}{{else}}<span class="muted">—</span>{{end}}</td>
-            <td>{{if .Email}}{{.Email}}{{else}}<span class="muted">—</span>{{end}}</td>
-            <td>{{if .Phone}}{{.Phone}}{{else}}<span class="muted">—</span>{{end}}</td>
-            <td>{{.Status}}</td>
-            <td class="muted">{{.CreatedAt}}</td>
-        </tr>
-        {{end}}
+            {{ range .Items }}
+            <tr>
+                <td>{{ .ID }}</td>
+                <td>{{ .Name }}</td>
+                <td>{{ .Email }}</td>
+                <td>{{ .Phone }}</td>
+                <td>{{ .Source }}</td>
+
+                <td>
+                    <form
+                        method="post"
+                        action="/admin/leads/{{ .ID }}/status"
+                        class="status-form"
+                    >
+                        <select
+                            name="status"
+                            onchange="this.form.submit()"
+                        >
+                            <option
+                                value="new"
+                                {{ if eq .Status "new" }}selected{{ end }}
+                            >
+                                new
+                            </option>
+
+                           
+
+                            <option
+                                value="processed"
+                                {{ if eq .Status "processed" }}selected{{ end }}
+                            >
+                                processed
+                            </option>
+
+                            <option
+                                value="failed"
+                                {{ if eq .Status "failed" }}selected{{ end }}
+                            >
+                                failed
+                            </option>
+                        </select>
+                    </form>
+                </td>
+
+                <td>{{ .CreatedAt }}</td>
+            </tr>
+            {{ end }}
         </tbody>
     </table>
 
-    <p class="muted">Total: {{.Total}}</p>
+    <div class="pagination">
+        {{ if .HasPrev }}
+        <a href="/admin/leads?limit={{ .Limit }}&offset={{ .PrevOffset }}">
+            Назад
+        </a>
+        {{ end }}
 
-    {{if .HasPrev}}
-    <a href="/admin/leads?offset={{.PrevOffset}}&limit={{.Limit}}">← Prev</a>
-    {{else}}
-    <span class="muted">← Prev</span>
-    {{end}}
-
-    {{if .HasNext}}
-    <a href="/admin/leads?offset={{.NextOffset}}&limit={{.Limit}}">Next →</a>
-    {{else}}
-    <span class="muted">Next →</span>
-    {{end}}
+        {{ if .HasNext }}
+        <a href="/admin/leads?limit={{ .Limit }}&offset={{ .NextOffset }}">
+            Вперёд
+        </a>
+        {{ end }}
+    </div>
 </body>
 </html>

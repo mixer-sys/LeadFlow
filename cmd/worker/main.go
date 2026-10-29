@@ -15,6 +15,7 @@ import (
 	"leadflow/internal/domain"
 	log "leadflow/internal/logger"
 	"leadflow/internal/platform/bitrix24"
+	"leadflow/internal/platform/crypto"
 	"leadflow/internal/platform/database"
 	"leadflow/internal/platform/queue"
 	"leadflow/internal/platform/telegram"
@@ -29,6 +30,17 @@ import (
 	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/trace"
 )
+
+const maxTelegramRetries = 5
+
+type leadProcessor struct {
+	logger           *slog.Logger
+	tracer           trace.Tracer
+	leadRepo         *repository.LeadRepo
+	webhookSvc       *service.WebhookService
+	telegramChannels *service.TelegramChannelService
+	bx               *bitrix24.Client
+}
 
 func main() {
 	cfg := config.New()
@@ -75,45 +87,55 @@ func main() {
 
 	leadRepo := repository.NewLeadRepo(db.Pool())
 	webhookRepo := repository.NewWebhookRepo(db.Pool())
-	webhookService := service.NewWebhookService(webhookRepo)
+
+	telegramChannelRepo := telegram.NewChannelRepository(db.Pool())
+
+	encryptor, err := crypto.NewEncryptor(cfg.EncryptionKey)
+	if err != nil {
+		logger.Error("failed to create encryptor", "error", err)
+		os.Exit(1)
+	}
+
+	telegramSender := telegram.NewSenderAdapter()
+
+	telegramChannelSvc := service.NewTelegramChannelService(
+		telegramChannelRepo,
+		encryptor,
+		telegramSender,
+	)
 
 	q := queue.NewRedisQueue(cfg.RedisAddr, "leads")
 
 	if err := q.EnsureLeadGroup(ctx); err != nil {
-		logger.Error("failed to ensure redis consumer group", "error", err)
+		logger.Error(
+			"failed to ensure redis consumer group",
+			"error", err,
+		)
 		os.Exit(1)
-	}
-
-	var tg *telegram.Client
-
-	if cfg.TelegramBotToken != "" && cfg.TelegramChatID != "" {
-		tg = telegram.NewClient(cfg.TelegramBotToken)
-
-		logger.Info("telegram client initialized", "chat_id", cfg.TelegramChatID)
-	} else {
-		logger.Warn("telegram not configured, notifications will be skipped")
 	}
 
 	var bx *bitrix24.Client
 
 	if cfg.Bitrix24WebhookURL != "" {
 		bx = bitrix24.NewClient(cfg.Bitrix24WebhookURL)
-
 		logger.Info("bitrix24 client initialized")
 	} else {
-		logger.Warn("bitrix24 not configured, leads will not be sent to CRM")
+		logger.Warn(
+			"bitrix24 not configured, leads will not be sent to CRM",
+		)
 	}
 
 	tracer := otel.Tracer("leadflow-worker")
 
+	webhookService := service.NewWebhookService(webhookRepo)
+
 	processor := &leadProcessor{
-		logger:       logger,
-		tracer:       tracer,
-		leadRepo:     leadRepo,
-		webhookSvc:   webhookService,
-		tg:           tg,
-		bx:           bx,
-		telegramChat: cfg.TelegramChatID,
+		logger:           logger,
+		tracer:           tracer,
+		leadRepo:         leadRepo,
+		webhookSvc:       webhookService,
+		telegramChannels: telegramChannelSvc,
+		bx:               bx,
 	}
 
 	stopCh := make(chan os.Signal, 1)
@@ -131,7 +153,10 @@ func main() {
 				return
 			case <-ticker.C:
 				if err := retryDueWebhooks(ctx, processor); err != nil {
-					logger.Error("failed to retry webhooks", "error", err)
+					logger.Error(
+						"failed to retry webhooks",
+						"error", err,
+					)
 				}
 			}
 		}
@@ -147,9 +172,7 @@ func main() {
 			msgs, err := q.ReadLeadCreatedGroup(ctx, 10)
 			if err != nil {
 				logger.Error("failed to read events", "error", err)
-
 				time.Sleep(time.Second)
-
 				continue
 			}
 
@@ -167,7 +190,6 @@ func main() {
 					)
 
 					_ = q.AckLeadCreated(ctx, m.ID)
-
 					continue
 				}
 
@@ -180,7 +202,6 @@ func main() {
 					)
 
 					_ = q.AckLeadCreated(ctx, m.ID)
-
 					continue
 				}
 
@@ -194,7 +215,6 @@ func main() {
 					)
 
 					_ = q.AckLeadCreated(ctx, m.ID)
-
 					continue
 				}
 
@@ -206,16 +226,8 @@ func main() {
 						"lead_id", ev.LeadID,
 					)
 
-					delay := retryDelay()
-
-					logger.Warn(
-						"retrying event after delay",
-						"msg_id", m.ID,
-						"delay", delay.String(),
-					)
-
 					select {
-					case <-time.After(delay):
+					case <-time.After(retryDelay()):
 					case <-ctx.Done():
 						return
 					}
@@ -322,18 +334,6 @@ func deref(s *string) string {
 	return *s
 }
 
-const maxTelegramRetries = 5
-
-type leadProcessor struct {
-	logger       *slog.Logger
-	tracer       trace.Tracer
-	leadRepo     *repository.LeadRepo
-	webhookSvc   *service.WebhookService
-	tg           *telegram.Client
-	bx           *bitrix24.Client
-	telegramChat string
-}
-
 func (p *leadProcessor) processLeadCreated(
 	ctx context.Context,
 	m redis.XMessage,
@@ -373,26 +373,11 @@ func (p *leadProcessor) processLeadCreated(
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "failed to get lead")
 
-		p.logger.ErrorContext(
-			ctx,
-			"failed to get lead",
-			slog.String("request_id", ev.RequestID),
-			slog.Int64("lead_id", ev.LeadID),
-			slog.String("error", err.Error()),
-		)
-
 		return fmt.Errorf("get lead %d: %w", ev.LeadID, err)
 	}
 
 	if lead == nil {
 		span.SetStatus(codes.Error, "lead not found")
-
-		p.logger.WarnContext(
-			ctx,
-			"lead not found",
-			slog.String("request_id", ev.RequestID),
-			slog.Int64("lead_id", ev.LeadID),
-		)
 
 		return fmt.Errorf("lead not found: lead_id %d", ev.LeadID)
 	}
@@ -430,15 +415,9 @@ func (p *leadProcessor) processLeadCreated(
 
 				p.logger.ErrorContext(
 					ctx,
-					"failed to create lead in bitrix24",
+					"bitrix24 sync failed, continuing to telegram",
 					"error", err,
 					"lead_id", lead.ID,
-				)
-
-				return fmt.Errorf(
-					"create bitrix lead for lead %d: %w",
-					lead.ID,
-					err,
 				)
 			}
 
@@ -448,13 +427,6 @@ func (p *leadProcessor) processLeadCreated(
 			bitrixSpan.SetStatus(codes.Ok, "lead created")
 			bitrixSpan.End()
 
-			p.logger.InfoContext(
-				ctx,
-				"lead created in bitrix24",
-				"lead_id", lead.ID,
-				"bitrix_id", bitrixID,
-			)
-
 			if err := p.leadRepo.SetBitrixID(ctx, lead.ID, bitrixID); err != nil {
 				return fmt.Errorf(
 					"save bitrix id for lead %d: %w",
@@ -462,49 +434,10 @@ func (p *leadProcessor) processLeadCreated(
 					err,
 				)
 			}
-		} else {
-			p.logger.InfoContext(
-				ctx,
-				"lead already exists in bitrix24, skipping",
-				"lead_id", lead.ID,
-				"bitrix_id", *lead.BitrixID,
-			)
 		}
-	} else {
-		p.logger.WarnContext(
-			ctx,
-			"bitrix24 not configured, skipping CRM sync",
-			"lead_id", lead.ID,
-		)
 	}
 
 	ctx, webhookSpan := p.tracer.Start(ctx, "webhook.send")
-
-	//
-	if err := p.webhookSvc.SendWebhooks(ctx, lead, ev.RequestID); err != nil {
-		webhookSpan.RecordError(err)
-		webhookSpan.SetStatus(codes.Error, "failed to send webhooks")
-		webhookSpan.End()
-
-		p.logger.ErrorContext(
-			ctx,
-			"failed to send webhooks",
-			"error", err,
-			"lead_id", lead.ID,
-		)
-
-		return fmt.Errorf("send webhooks for lead %d: %w", lead.ID, err)
-	}
-
-	webhookSpan.SetStatus(codes.Ok, "webhooks sent")
-	webhookSpan.End()
-
-	p.logger.InfoContext(
-		ctx,
-		"webhooks sent",
-		"lead_id", lead.ID,
-	)
-	//
 
 	webhookErr := p.webhookSvc.SendWebhooks(ctx, lead, ev.RequestID)
 
@@ -523,18 +456,43 @@ func (p *leadProcessor) processLeadCreated(
 
 		p.logger.InfoContext(
 			ctx,
-			"webhookds sent",
+			"webhooks sent",
 			"lead_id", lead.ID,
 		)
 	}
 
 	webhookSpan.End()
 
-	if p.tg == nil {
-		p.logger.WarnContext(
+	if err := p.notifyTelegram(ctx, lead, ev); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (p *leadProcessor) notifyTelegram(
+	ctx context.Context,
+	lead *domain.Lead,
+	ev queue.LeadCreatedEvent,
+) error {
+	channels, err := p.telegramChannels.ListActive(
+		ctx,
+		lead.OrganizationID,
+	)
+	if err != nil {
+		return fmt.Errorf(
+			"list active telegram channels for lead %d: %w",
+			lead.ID,
+			err,
+		)
+	}
+
+	if len(channels) == 0 {
+		p.logger.InfoContext(
 			ctx,
-			"telegram not configured, skipping notification",
+			"no active telegram channels for organization, skipping notification",
 			"lead_id", lead.ID,
+			"organization_id", lead.OrganizationID,
 		)
 
 		return nil
@@ -562,30 +520,61 @@ func (p *leadProcessor) processLeadCreated(
 
 	ctx, telegramSpan := p.tracer.Start(
 		ctx,
-		"telegram.send-message",
+		"telegram.send-messages",
 		trace.WithSpanKind(trace.SpanKindClient),
 	)
+	defer telegramSpan.End()
 
-	text := fmt.Sprintf("🔔 Новая заявка\nLead ID: %d", ev.LeadID)
+	text := fmt.Sprintf(
+		"🔔 Новая заявка\nLead ID: %d",
+		ev.LeadID,
+	)
 
-	msgID, err := p.tg.SendMessage(ctx, telegram.SendMessageParams{
-		ChatID: p.telegramChat,
-		Text:   text,
-	})
+	var sendErr error
 
-	if err != nil {
-		telegramSpan.RecordError(err)
+	for _, channel := range channels {
+		msgID, err := p.telegramChannels.SendMessage(
+			ctx,
+			channel.BotToken,
+			channel.ChatID,
+			text,
+		)
+
+		if err != nil {
+			telegramSpan.RecordError(err)
+
+			p.logger.ErrorContext(
+				ctx,
+				"failed to send telegram message",
+				"error", err,
+				"channel_id", channel.ID,
+				"lead_id", lead.ID,
+			)
+
+			sendErr = err
+			continue
+		}
+
+		telegramSpan.SetAttributes(
+			attribute.Int64(
+				fmt.Sprintf("telegram.channel_%d.message_id", channel.ID),
+				msgID,
+			),
+		)
+
+		p.logger.InfoContext(
+			ctx,
+			"telegram message sent",
+			"lead_id", lead.ID,
+			"channel_id", channel.ID,
+			"message_id", msgID,
+		)
+	}
+
+	if sendErr != nil {
 		telegramSpan.SetStatus(
 			codes.Error,
-			"failed to send telegram message",
-		)
-		telegramSpan.End()
-
-		p.logger.ErrorContext(
-			ctx,
-			"failed to send telegram message",
-			"error", err,
-			"lead_id", lead.ID,
+			"failed to send telegram messages",
 		)
 
 		if incrErr := p.leadRepo.IncrTelegramRetryCount(
@@ -603,24 +592,13 @@ func (p *leadProcessor) processLeadCreated(
 		}
 
 		return fmt.Errorf(
-			"send telegram message for lead %d: %w",
+			"send telegram messages for lead %d: %w",
 			lead.ID,
-			err,
+			sendErr,
 		)
 	}
 
-	telegramSpan.SetAttributes(
-		attribute.Int64("telegram.message_id", msgID),
-	)
-	telegramSpan.SetStatus(codes.Ok, "message sent")
-	telegramSpan.End()
-
-	p.logger.InfoContext(
-		ctx,
-		"telegram message sent",
-		"lead_id", lead.ID,
-		"message_id", msgID,
-	)
+	telegramSpan.SetStatus(codes.Ok, "messages sent")
 
 	return nil
 }
